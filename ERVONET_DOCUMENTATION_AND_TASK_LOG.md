@@ -4,7 +4,7 @@
 > **Acronym:** **E**mergency **R**elay **V**ia **O**ffline **N**odes for **E**mergency **T**ransmission  
 > **Target Environment:** Infrastructure-Denied, Disaster, Battlefield, and Remote Crisis Scenarios (Zero Internet, Zero Cellular, Zero Wi-Fi)  
 > **Platform:** Android (Physical Devices & Standalone Release APK)  
-> **Latest Release:** `ERVONET.apk` (~53.1 MB, Build Date: November 4, 2026 - Message Transmission & Broadcast Engine Fix)
+> **Latest Release:** `ERVONET.apk` (~53.2 MB, Build Date: November 4, 2026 - Tactical Offline Mesh Radar Map & Proximity Positioning)
 
 ---
 
@@ -140,6 +140,13 @@ flowchart TD
 - **Dedicated Full-Height Chat Page (`ChatScreen.tsx`):** Tapping any user card, "Everyone" broadcast, channel, or active chat transitions immediately into a dedicated, 100% full-screen conversation view with tactile back navigation (`← Hub`), target connection pill, quick emergency preset responses, and full-height message feed.
 - **Native Android Hardware Back Support:** Integrates React Native `BackHandler` so pressing Android's physical back button smoothly returns to the Hub without closing the application.
 
+#### 10. Offline Tactical Mesh Radar Map & Proximity Visualization (`OfflineMeshMap.tsx`)
+- **Zero-Internet Spatial Radar:** Replaced the redundant vertical chat list on the Hub with an interactive tactical offline vector radar map. It requires zero cloud tile downloads, zero cellular data, and zero external GPS coordinates.
+- **Concentric Proximity Range Rings:** Renders three concentric distance rings (Outer, Middle, Inner) with live zoom range toggles (`15m`, `30m`, `50m`) to match varying emergency operational scales (e.g. collapsed buildings vs. open search zones).
+- **Log-Distance RF Propagation Model:** Converts raw BLE RSSI readings into real-world physical distance estimations ($d = 10^{\frac{TxPower - RSSI}{10 \cdot n}}$) calibrated for disaster debris and indoor path loss ($n = 2.4, TxPower = -59\text{ dBm}$).
+- **Stable ID-Derived Cardinal Bearings:** Derives deterministic spatial polar angles from peer node IDs ($\theta = \text{hash}(\text{NodeID}) \pmod{360}$) so peer positions remain rock-steady on the radar canvas without jittering across scan intervals.
+- **Interactive Node Dossier & Instant Dispatch:** Tapping any peer node pin on the radar highlights the node and surfaces an interactive tactical dossier detailing callsign, device ID (`ERVO-XXXX`), connection state, live dBm, and estimated distance (~Xm), accompanied by a direct 1-tap `Open Dedicated Chat ➔` action button.
+
 ---
 
 ## 4. Task & Dependency Log
@@ -165,6 +172,7 @@ The following matrix documents all completed engineering phases, architectural d
 | **TASK-15** | **Compulsory Username Onboarding Gate & Callsign Persistence**<br>Mandatory identity registration on install; app is locked until valid callsign is saved | `COMPLETED` | Android `SharedPreferences`, React Native Modal gating, BLE Advertising | `CompulsoryUsernameModal.tsx`<br>`ResQNetBleModule.kt`<br>`nativeBleBridge.ts`<br>`storageService.ts`<br>`bleService.ts`<br>`MainScreen.tsx`<br>`HeaderBar.tsx` | Verified: App cannot be used until user saves their name; non-dismissible full-screen gate on first launch/unconfigured state; username persists permanently in `ErvoNetPrefs` across restarts and reboots; live character limit (2-15 chars); auto-activates BLE advertising with the newly configured name immediately upon save. |
 | **TASK-16** | **Git Remote Synchronization & Historical Progressive Timeline**<br>Full repo setup on GitHub with chronological commit history (Sept 10 – Nov 4) | `COMPLETED` | Git branching, Author/Committer timestamps, Remote push | `git history`<br>`README.md`<br>`.gitignore`<br>`ERVONET_DOCUMENTATION_AND_TASK_LOG.md` | Verified: Successfully generated 15 progressive chronological commits from 10th September 2026 to 4th November 2026; set author to Nayan Jyoti Athporia; pushed cleanly to remote repository `https://github.com/NAYAN-JYOTI-ATHPORIA/ERVONET.git`. |
 | **TASK-17** | **Dedicated Full-Screen Chat Page & Clean Hub Restructuring**<br>Separated chat into its own dedicated screen; eliminated cramped multi-stack clutter | `COMPLETED` | React Native Navigation lifecycle, BackHandler, Component modularization | `ChatScreen.tsx`<br>`MainScreen.tsx`<br>`NearbyPeopleBar.tsx` | Verified: Chat has its own dedicated full-height page (`ChatScreen.tsx`) with back navigation (`← Hub`), target connection indicator, and emergency preset chips; Hub displays clean Nearby People cards with live distance/dBm preserved, crisis channels, and conversation previews; Android hardware back button cleanly navigates back to Hub. |
+| **TASK-18** | **Offline Tactical Mesh Radar Map & Proximity Visualization**<br>Replaced redundant chat list with zero-internet offline radar map; plotted peers on concentric distance rings (15m/30m/50m) with live signal distance and interactive dossier | `COMPLETED` | BLE RSSI log-distance path loss, Vector geometry, Concentric range scaling | `OfflineMeshMap.tsx`<br>`MainScreen.tsx`<br>`distance.ts` | Verified: Removed redundant vertical chat list; Hub renders tactical radar map with concentric rings (15m, 30m, 50m), crosshairs, cardinal markers, and pulsing center node (YOU); nearby peers plotted with ~Xm distance badges; tapping pin opens tactical dossier with 1-tap "Open Dedicated Chat ➔" navigation. |
 
 ---
 

@@ -14,6 +14,7 @@ import { NearbyPeopleBar } from '../components/NearbyPeopleBar';
 import { ScannedDevicesSection } from '../components/ScannedDevicesSection';
 import { SettingsModal } from '../components/SettingsModal';
 import { CompulsoryUsernameModal } from '../components/CompulsoryUsernameModal';
+import { OfflineMeshMap } from '../components/OfflineMeshMap';
 import { ChatScreen } from './ChatScreen';
 import { bleService } from '../services/bleService';
 import { bleBridge } from '../services/nativeBleBridge';
@@ -22,15 +23,13 @@ import { MessageRecord } from '../types/message';
 import { NetworkMetrics } from '../types/metrics';
 import { LocalNodeConfig } from '../services/storageService';
 import { EmergencyPreset } from '../protocol/emergencyAlerts';
-import { formatTime } from '../utils/formatters';
-import { getSignalQuality, estimateDistanceMeters } from '../utils/distance';
 
-type ActiveTab = 'CONVERSATIONS' | 'DEVICES';
+type ActiveTab = 'MESH_MAP' | 'DEVICES';
 type CurrentScreen = 'HUB' | 'CHAT';
 
 export const MainScreen: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<CurrentScreen>('HUB');
-  const [activeTab, setActiveTab] = useState<ActiveTab>('CONVERSATIONS');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('MESH_MAP');
   const [radioState, setRadioState] = useState<RadioState>(
     bleService.getStateSnapshot().radioState
   );
@@ -176,37 +175,6 @@ export const MainScreen: React.FC = () => {
       p.name === selectedTargetId
   );
 
-  // Helper to extract the last message for a peer
-  const getLastMessageForPeer = (peer: PeerNode) => {
-    const peerMsgs = messages.filter((m) => {
-      if (m.packet.priority === 'CRITICAL_SOS') return false;
-      const isBroadcast =
-        m.packet.destinationId === 'BROADCAST' ||
-        m.packet.destinationId === '#all' ||
-        m.packet.destinationId.startsWith('#');
-      if (isBroadcast) return false;
-
-      return (
-        m.packet.destinationId === peer.nodeId ||
-        m.packet.destinationId === peer.id ||
-        m.packet.senderId === peer.nodeId ||
-        m.packet.senderId === peer.id ||
-        (!!peer.name &&
-          (m.packet.senderName === peer.name ||
-            m.packet.destinationId === peer.name))
-      );
-    });
-    return peerMsgs.length > 0 ? peerMsgs[peerMsgs.length - 1] : null;
-  };
-
-  const latestBroadcastMsg = messages
-    .filter(
-      (m) =>
-        m.packet.destinationId === 'BROADCAST' ||
-        m.packet.destinationId === '#all'
-    )
-    .slice(-1)[0];
-
   // -------------------------------------------------------------
   // DEDICATED FULL-SCREEN CHAT PAGE
   // -------------------------------------------------------------
@@ -259,18 +227,18 @@ export const MainScreen: React.FC = () => {
         <TouchableOpacity
           style={[
             styles.tabButton,
-            activeTab === 'CONVERSATIONS' && styles.tabButtonActive,
+            activeTab === 'MESH_MAP' && styles.tabButtonActive,
           ]}
-          onPress={() => setActiveTab('CONVERSATIONS')}
+          onPress={() => setActiveTab('MESH_MAP')}
           activeOpacity={0.7}
         >
           <Text
             style={[
               styles.tabText,
-              activeTab === 'CONVERSATIONS' && styles.tabTextActive,
+              activeTab === 'MESH_MAP' && styles.tabTextActive,
             ]}
           >
-            Conversations & Mesh
+            Mesh Radar & Hub
           </Text>
         </TouchableOpacity>
 
@@ -301,7 +269,7 @@ export const MainScreen: React.FC = () => {
       </View>
 
       {/* Main Tab Content */}
-      {activeTab === 'CONVERSATIONS' ? (
+      {activeTab === 'MESH_MAP' ? (
         <ScrollView style={styles.hubScroll} showsVerticalScrollIndicator={false}>
           {/* Ultra-compact Emergency SOS Distress & Presets */}
           <QuickStatusBar
@@ -324,118 +292,14 @@ export const MainScreen: React.FC = () => {
             outboxCount={outboxCount}
           />
 
-          {/* Open Conversations Section */}
-          <View style={styles.conversationsContainer}>
-            <View style={styles.convHeaderRow}>
-              <Text style={styles.convHeaderTitle}>OFFLINE CHATS</Text>
-              <Text style={styles.convHeaderSub}>
-                Tap any card to open dedicated chat
-              </Text>
-            </View>
-
-            {/* Conversation 1: Everyone (Broadcast) */}
-            <TouchableOpacity
-              style={styles.convCard}
-              onPress={() => handleOpenChat('BROADCAST')}
-              activeOpacity={0.75}
-            >
-              <View style={[styles.convAvatar, styles.convAvatarBroadcast]}>
-                <Text style={styles.convAvatarText}>ALL</Text>
-              </View>
-              <View style={styles.convContent}>
-                <View style={styles.convTopRow}>
-                  <Text style={styles.convTitle}>Everyone (Broadcast)</Text>
-                  {latestBroadcastMsg && (
-                    <Text style={styles.convTime}>
-                      {formatTime(latestBroadcastMsg.packet.timestamp)}
-                    </Text>
-                  )}
-                </View>
-                <Text style={styles.convSnippet} numberOfLines={1}>
-                  {latestBroadcastMsg
-                    ? `${
-                        latestBroadcastMsg.direction === 'OUTGOING'
-                          ? 'You: '
-                          : (latestBroadcastMsg.packet.senderName ||
-                              latestBroadcastMsg.packet.senderId) + ': '
-                      }${latestBroadcastMsg.packet.payload}`
-                    : 'Tap to open broadcast chat with all nearby nodes...'}
-                </Text>
-              </View>
-              <View style={styles.convArrowWrap}>
-                <Text style={styles.convArrow}>Chat ➔</Text>
-              </View>
-            </TouchableOpacity>
-
-            {/* Conversation Cards for Nearby Discovered/Connected Users */}
-            {peers.map((peer) => {
-              const peerName = peer.name || peer.nodeId;
-              const isConnected = peer.connectionState === 'CONNECTED';
-              const estimatedMeters = peer.rssi ? estimateDistanceMeters(peer.rssi) : null;
-              const distText = estimatedMeters ? `~${estimatedMeters}m` : 'Nearby';
-              const lastPeerMsg = getLastMessageForPeer(peer);
-
-              return (
-                <TouchableOpacity
-                  key={peer.id}
-                  style={styles.convCard}
-                  onPress={() => handleOpenChat(peer.nodeId || peer.id)}
-                  activeOpacity={0.75}
-                >
-                  <View style={styles.convAvatar}>
-                    <Text style={styles.convAvatarText}>
-                      {(peerName[0] || 'U').toUpperCase()}
-                    </Text>
-                    <View
-                      style={[
-                        styles.convStatusDot,
-                        isConnected ? styles.dotGreen : styles.dotAmber,
-                      ]}
-                    />
-                  </View>
-                  <View style={styles.convContent}>
-                    <View style={styles.convTopRow}>
-                      <View style={styles.convNameGroup}>
-                        <Text style={styles.convTitle} numberOfLines={1}>
-                          {peerName}
-                        </Text>
-                        <Text style={styles.convChip}>{peer.nodeId}</Text>
-                      </View>
-                      {lastPeerMsg && (
-                        <Text style={styles.convTime}>
-                          {formatTime(lastPeerMsg.packet.timestamp)}
-                        </Text>
-                      )}
-                    </View>
-                    <Text style={styles.convSnippet} numberOfLines={1}>
-                      {lastPeerMsg
-                        ? `${
-                            lastPeerMsg.direction === 'OUTGOING' ? 'You: ' : ''
-                          }${lastPeerMsg.packet.payload}`
-                        : `${distText} • ${peer.rssi || -75} dBm • ${
-                            isConnected ? 'Connected' : 'In Range'
-                          }`}
-                    </Text>
-                  </View>
-                  <View style={styles.convArrowWrap}>
-                    <Text style={styles.convArrow}>Chat ➔</Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-
-            {/* Empty state hint if no peers discovered yet */}
-            {peers.length === 0 && (
-              <View style={styles.hubEmptyBox}>
-                <Text style={styles.hubEmptyTitle}>
-                  Listening for Nearby ERVONET Nodes
-                </Text>
-                <Text style={styles.hubEmptySubtitle}>
-                  Bring another Android phone running ERVONET within Bluetooth range (~30m). Devices discover each other automatically without internet.
-                </Text>
-              </View>
-            )}
-          </View>
+          {/* Tactical Offline Mesh Map showing spatial distribution and relative node locations */}
+          <OfflineMeshMap
+            localNodeId={localConfig.deviceId || localConfig.nodeId}
+            localName={localConfig.displayName || localConfig.name}
+            peers={peers}
+            onOpenChat={handleOpenChat}
+            onConnectPeer={handleConnectPeer}
+          />
         </ScrollView>
       ) : (
         /* Dedicated Scanned Devices Section */
@@ -525,144 +389,5 @@ const styles = StyleSheet.create({
   },
   hubScroll: {
     flex: 1,
-  },
-  conversationsContainer: {
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: 24,
-  },
-  convHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-    paddingHorizontal: 2,
-  },
-  convHeaderTitle: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#64748B',
-    letterSpacing: 0.8,
-  },
-  convHeaderSub: {
-    fontSize: 9.5,
-    fontWeight: '600',
-    color: '#475569',
-  },
-  convCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0A0F1D',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: '#162032',
-    gap: 12,
-  },
-  convAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#0F1E36',
-    borderWidth: 1,
-    borderColor: '#0284C7',
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  convAvatarBroadcast: {
-    borderColor: '#38BDF8',
-    backgroundColor: '#0C2A44',
-  },
-  convAvatarText: {
-    fontSize: 13,
-    fontWeight: '900',
-    color: '#38BDF8',
-  },
-  convStatusDot: {
-    position: 'absolute',
-    bottom: -1,
-    right: -1,
-    width: 9,
-    height: 9,
-    borderRadius: 4.5,
-    borderWidth: 1.5,
-    borderColor: '#0A0F1D',
-  },
-  dotGreen: {
-    backgroundColor: '#10B981',
-  },
-  dotAmber: {
-    backgroundColor: '#F59E0B',
-  },
-  convContent: {
-    flex: 1,
-  },
-  convTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 2,
-  },
-  convNameGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flex: 1,
-  },
-  convTitle: {
-    fontSize: 13.5,
-    fontWeight: '800',
-    color: '#F8FAFC',
-  },
-  convChip: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: '#38BDF8',
-    backgroundColor: '#0F1E36',
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 3,
-  },
-  convTime: {
-    fontSize: 9.5,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  convSnippet: {
-    fontSize: 11.5,
-    color: '#94A3B8',
-    lineHeight: 16,
-  },
-  convArrowWrap: {
-    paddingLeft: 4,
-  },
-  convArrow: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#38BDF8',
-  },
-  hubEmptyBox: {
-    backgroundColor: '#0A0F1D',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#162032',
-    padding: 16,
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  hubEmptyTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#E2E8F0',
-    marginBottom: 4,
-  },
-  hubEmptySubtitle: {
-    fontSize: 11,
-    color: '#64748B',
-    textAlign: 'center',
-    lineHeight: 16,
   },
 });
