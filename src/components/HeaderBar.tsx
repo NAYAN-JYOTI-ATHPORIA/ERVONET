@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   TextInput,
   Modal,
+  Alert,
 } from 'react-native';
 import { LocalNodeConfig } from '../services/storageService';
 import { RadioState } from '../types/ble';
@@ -16,6 +17,7 @@ interface HeaderBarProps {
   onUpdateName: (name: string) => void;
   onOpenSettings: () => void;
   onEnableBluetooth?: () => void;
+  onSendSos?: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -24,9 +26,26 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onUpdateName,
   onOpenSettings,
   onEnableBluetooth,
+  onSendSos,
 }) => {
   const [nameModalVisible, setNameModalVisible] = useState(false);
   const [tempName, setTempName] = useState(localConfig.displayName || localConfig.name);
+
+  const handleSosPress = () => {
+    if (!onSendSos) return;
+    Alert.alert(
+      'Broadcast Emergency SOS?',
+      'This broadcasts an immediate critical distress beacon to ALL nearby phones within Bluetooth reach.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send SOS Now',
+          style: 'destructive',
+          onPress: onSendSos,
+        },
+      ]
+    );
+  };
 
   const handleSaveName = () => {
     if (tempName.trim()) {
@@ -91,6 +110,16 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         {/* Right Action Buttons */}
         <View style={styles.rightActions}>
+          {onSendSos && (
+            <TouchableOpacity
+              style={styles.sosHeaderBtn}
+              onPress={handleSosPress}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.sosHeaderText}>SOS</Text>
+            </TouchableOpacity>
+          )}
+
           {/* User Name Chip */}
           <TouchableOpacity
             style={styles.userChip}
@@ -288,6 +317,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+  },
+  sosHeaderBtn: {
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 8,
+    paddingVertical: 4.5,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+  },
+  sosHeaderText: {
+    fontSize: 10.5,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
   },
   userChip: {
     flexDirection: 'row',

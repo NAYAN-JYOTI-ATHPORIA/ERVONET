@@ -8,7 +8,6 @@ import {
   Alert,
 } from 'react-native';
 import { HeaderBar } from '../components/HeaderBar';
-import { QuickStatusBar } from '../components/QuickStatusBar';
 import { ChannelBar } from '../components/ChannelBar';
 import { NearbyPeopleBar } from '../components/NearbyPeopleBar';
 import { ScannedDevicesSection } from '../components/ScannedDevicesSection';
@@ -220,6 +219,7 @@ export const MainScreen: React.FC = () => {
         onUpdateName={handleUpdateName}
         onOpenSettings={() => setShowSettingsModal(true)}
         onEnableBluetooth={() => bleBridge.enableBluetooth()}
+        onSendSos={handleSendSos}
       />
 
       {/* Clean Segmented Navigation Tab */}
@@ -271,12 +271,6 @@ export const MainScreen: React.FC = () => {
       {/* Main Tab Content */}
       {activeTab === 'MESH_MAP' ? (
         <ScrollView style={styles.hubScroll} showsVerticalScrollIndicator={false}>
-          {/* Ultra-compact Emergency SOS Distress & Presets */}
-          <QuickStatusBar
-            onSendPreset={handleSendPreset}
-            onSendSos={handleSendSos}
-          />
-
           {/* Cards for Everyone and Connected Users with Distance, Signal Strength & Factors */}
           <NearbyPeopleBar
             peers={peers}
