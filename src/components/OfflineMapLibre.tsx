@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,17 +8,22 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  PermissionsAndroid,
+  Platform,
 } from 'react-native';
 import {
   Map,
   Camera,
   Marker,
+  UserLocation,
+  LocationManager,
   OfflineManager,
   type CameraRef,
   type MapRef,
   type OfflinePack,
   type OfflinePackStatus,
   type LngLatBounds,
+  type GeolocationPosition,
 } from '@maplibre/maplibre-react-native';
 import { PeerNode } from '../types/ble';
 import { estimateDistanceMeters } from '../utils/distance';
@@ -69,9 +74,15 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
   const mapRef = useRef<MapRef>(null);
   const cameraRef = useRef<CameraRef>(null);
 
-  // Default coordinate: Tactical Base coordinates [Longitude, Latitude]
-  const [centerCoord, setCenterCoord] = useState<[number, number]>([91.7362, 26.1445]); // Guwahati / Regional Hub default
-  const [currentZoom, setCurrentZoom] = useState<number>(14);
+  // Exact Live GPS Location State
+  const [userCoords, setUserCoords] = useState<[number, number] | null>(null);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const [gpsStatus, setGpsStatus] = useState<'ACQUIRING' | 'LOCKED' | 'DENIED'>('ACQUIRING');
+  const hasCenteredRef = useRef<boolean>(false);
+
+  // Fallback coordinate: Tactical Base coordinates [Longitude, Latitude]
+  const [centerCoord, setCenterCoord] = useState<[number, number]>([91.7362, 26.1445]); // Regional default
+  const [currentZoom, setCurrentZoom] = useState<number>(15);
   const [currentStyle, setCurrentStyle] = useState<StyleKey>('liberty');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
@@ -84,6 +95,78 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
 
   // Selected peer on map
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
+
+  // The active position: exact GPS when available, else fallback default
+  const activePosition: [number, number] = userCoords || centerCoord;
+
+  // Real-time GPS Tracker & Permission Handler
+  const startLocationTracking = useCallback(async () => {
+    try {
+      if (Platform.OS === 'android') {
+        const granted = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+        ]);
+
+        const fineGranted =
+          granted[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] ===
+          PermissionsAndroid.RESULTS.GRANTED;
+        const coarseGranted =
+          granted[PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION] ===
+          PermissionsAndroid.RESULTS.GRANTED;
+
+        if (!fineGranted && !coarseGranted) {
+          setGpsStatus('DENIED');
+          return;
+        }
+      }
+
+      setGpsStatus('ACQUIRING');
+
+      // Update on every 1 meter displacement
+      LocationManager.setMinDisplacement(1);
+      LocationManager.start();
+
+      const handleLocationUpdate = (location: GeolocationPosition) => {
+        if (location?.coords) {
+          const { longitude, latitude, accuracy } = location.coords;
+          setUserCoords([longitude, latitude]);
+          setCenterCoord([longitude, latitude]);
+          setGpsAccuracy(Math.round(accuracy));
+          setGpsStatus('LOCKED');
+
+          // Smoothly fly camera to exact physical position on initial lock
+          if (!hasCenteredRef.current) {
+            hasCenteredRef.current = true;
+            cameraRef.current?.flyTo({
+              center: [longitude, latitude],
+              zoom: 16,
+              duration: 1000,
+            });
+          }
+        }
+      };
+
+      LocationManager.addListener(handleLocationUpdate);
+
+      // Check for last known cached fix for instant map centering
+      try {
+        const lastKnown = await LocationManager.getCurrentPosition();
+        if (lastKnown?.coords) {
+          handleLocationUpdate(lastKnown);
+        }
+      } catch (e) {
+        console.warn('Initial location notice:', e);
+      }
+
+      return () => {
+        LocationManager.removeListener(handleLocationUpdate);
+      };
+    } catch (err) {
+      console.warn('Location initialization error:', err);
+      setGpsStatus('DENIED');
+    }
+  }, []);
 
   // Load existing offline packs from native database
   const loadOfflinePacks = async () => {
@@ -109,7 +192,15 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
 
   useEffect(() => {
     loadOfflinePacks();
-  }, []);
+    let cleanupFn: (() => void) | undefined;
+    startLocationTracking().then((cleanup) => {
+      cleanupFn = cleanup;
+    });
+
+    return () => {
+      if (cleanupFn) cleanupFn();
+    };
+  }, [startLocationTracking]);
 
   // Download an offline region with OpenFreeMap tiles
   const handleDownloadRegion = async (
@@ -189,13 +280,13 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
       if (mapRef.current) {
         bounds = await mapRef.current.getBounds();
       } else {
-        // Fallback bounds around centerCoord
+        // Fallback bounds around active exact position
         const delta = 0.05;
         bounds = [
-          centerCoord[0] - delta,
-          centerCoord[1] - delta,
-          centerCoord[0] + delta,
-          centerCoord[1] + delta,
+          activePosition[0] - delta,
+          activePosition[1] - delta,
+          activePosition[0] + delta,
+          activePosition[1] + delta,
         ];
       }
 
@@ -210,10 +301,10 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
   const handleDownloadPresetSector = async (radiusKm: number, label: string) => {
     const delta = (radiusKm / 111.32);
     const bounds: LngLatBounds = [
-      centerCoord[0] - delta,
-      centerCoord[1] - delta,
-      centerCoord[0] + delta,
-      centerCoord[1] + delta,
+      activePosition[0] - delta,
+      activePosition[1] - delta,
+      activePosition[0] + delta,
+      activePosition[1] + delta,
     ];
     await handleDownloadRegion(`${label} (${radiusKm}km)`, bounds, 11, 14);
   };
@@ -256,26 +347,58 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
     const nextZoom = Math.min(18, Math.max(3, currentZoom + delta));
     setCurrentZoom(nextZoom);
     cameraRef.current?.easeTo({
-      center: centerCoord,
+      center: activePosition,
       zoom: nextZoom,
       duration: 250,
     });
   };
 
-  // Center on local node (YOU)
-  const handleRecenter = () => {
-    cameraRef.current?.flyTo({
-      center: centerCoord,
-      zoom: 14,
-      duration: 600,
-    });
+  // Center on local node (YOU) with exact live GPS location
+  const handleRecenter = async () => {
+    if (userCoords) {
+      cameraRef.current?.flyTo({
+        center: userCoords,
+        zoom: 16,
+        duration: 700,
+      });
+    } else {
+      // Re-query current GPS fix
+      try {
+        const lastKnown = await LocationManager.getCurrentPosition();
+        if (lastKnown?.coords) {
+          const { longitude, latitude, accuracy } = lastKnown.coords;
+          setUserCoords([longitude, latitude]);
+          setCenterCoord([longitude, latitude]);
+          setGpsAccuracy(Math.round(accuracy));
+          setGpsStatus('LOCKED');
+          cameraRef.current?.flyTo({
+            center: [longitude, latitude],
+            zoom: 16,
+            duration: 700,
+          });
+          return;
+        }
+      } catch (e) {
+        console.warn('GPS query error:', e);
+      }
+
+      cameraRef.current?.flyTo({
+        center: centerCoord,
+        zoom: 15,
+        duration: 600,
+      });
+      Alert.alert(
+        'Acquiring Location',
+        'Acquiring exact GPS satellite fix. Please verify Location is turned ON in phone settings.'
+      );
+    }
   };
 
   // Derive geographic latitude/longitude for a peer based on BLE estimated distance and stable bearing
   const getPeerCoordinates = (peer: PeerNode): [number, number] => {
     const dist = peer.rssi ? estimateDistanceMeters(peer.rssi) : 15;
     const angle = deriveAngleFromId(peer.nodeId || peer.id);
-    const [uLng, uLat] = centerCoord;
+    const [uLng, uLat] = activePosition;
 
     // Approximating meter offsets into latitude/longitude degrees
     // 1 deg latitude ~= 111,320m
@@ -363,13 +486,16 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
           <Camera
             ref={cameraRef}
             initialViewState={{
-              center: centerCoord,
+              center: activePosition,
               zoom: currentZoom,
             }}
           />
 
-          {/* Local User Marker (YOU) */}
-          <Marker lngLat={centerCoord}>
+          {/* Native Vector User Location Puck with Accuracy Halo */}
+          <UserLocation animated={true} accuracy={true} heading={false} />
+
+          {/* High-Tech Tactical Beacon Marker for Local User (YOU) */}
+          <Marker lngLat={activePosition}>
             <View style={styles.userMarkerContainer}>
               <View style={styles.userMarkerPulse} />
               <View style={styles.userMarkerCore}>
@@ -378,7 +504,7 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
             </View>
           </Marker>
 
-          {/* Peer Nodes Plotted on the Map */}
+          {/* Peer Nodes Plotted on the Map Relative to Real User Position */}
           {displayPeers.map((peer) => {
             const peerCoords = getPeerCoordinates(peer);
             const isConnected = peer.connectionState === 'CONNECTED';
@@ -411,6 +537,38 @@ export const OfflineMapLibre: React.FC<OfflineMapLibreProps> = ({
             );
           })}
         </Map>
+
+        {/* Live GPS Lock & Accuracy Overlay Ribbon */}
+        <TouchableOpacity
+          style={[
+            styles.gpsOverlayBadge,
+            gpsStatus === 'LOCKED'
+              ? styles.gpsOverlayLocked
+              : gpsStatus === 'DENIED'
+              ? styles.gpsOverlayDenied
+              : styles.gpsOverlayAcquiring,
+          ]}
+          onPress={startLocationTracking}
+          activeOpacity={0.8}
+        >
+          <View
+            style={[
+              styles.gpsDot,
+              gpsStatus === 'LOCKED'
+                ? styles.gpsDotGreen
+                : gpsStatus === 'DENIED'
+                ? styles.gpsDotRed
+                : styles.gpsDotAmber,
+            ]}
+          />
+          <Text style={styles.gpsOverlayText} numberOfLines={1}>
+            {gpsStatus === 'LOCKED' && userCoords
+              ? `GPS FIXED • ${userCoords[1].toFixed(5)}°N, ${userCoords[0].toFixed(5)}°E (±${gpsAccuracy}m)`
+              : gpsStatus === 'DENIED'
+              ? 'GPS PERMISSION REQUIRED • TAP TO ENABLE'
+              : 'ACQUIRING EXACT GPS SATELLITES...'}
+          </Text>
+        </TouchableOpacity>
 
         {/* Floating Controls: Zoom In / Zoom Out / Recenter */}
         <View style={styles.floatingControls}>
@@ -829,9 +987,54 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#94A3B8',
   },
-  downloadRibbon: {
+  gpsOverlayBadge: {
     position: 'absolute',
     top: 10,
+    left: 10,
+    right: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#090D1AE8',
+    borderRadius: 7,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderWidth: 1,
+    gap: 7,
+    zIndex: 10,
+  },
+  gpsOverlayLocked: {
+    borderColor: '#10B981',
+  },
+  gpsOverlayAcquiring: {
+    borderColor: '#F59E0B',
+  },
+  gpsOverlayDenied: {
+    borderColor: '#EF4444',
+  },
+  gpsDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  gpsDotGreen: {
+    backgroundColor: '#10B981',
+  },
+  gpsDotAmber: {
+    backgroundColor: '#F59E0B',
+  },
+  gpsDotRed: {
+    backgroundColor: '#EF4444',
+  },
+  gpsOverlayText: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    color: '#F8FAFC',
+    letterSpacing: 0.4,
+    flex: 1,
+  },
+  downloadRibbon: {
+    position: 'absolute',
+    top: 44,
     left: 10,
     right: 10,
     backgroundColor: '#090D1AF0',
@@ -842,6 +1045,7 @@ const styles = StyleSheet.create({
     gap: 10,
     borderWidth: 1,
     borderColor: '#0284C7',
+    zIndex: 9,
   },
   downloadRibbonTextWrap: {
     flex: 1,

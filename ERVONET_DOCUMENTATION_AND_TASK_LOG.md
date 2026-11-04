@@ -4,7 +4,7 @@
 > **Acronym:** **E**mergency **R**elay **V**ia **O**ffline **N**odes for **E**mergency **T**ransmission  
 > **Target Environment:** Infrastructure-Denied, Disaster, Battlefield, and Remote Crisis Scenarios (Zero Internet, Zero Cellular, Zero Wi-Fi)  
 > **Platform:** Android (Physical Devices & Standalone Release APK)  
-> **Latest Release:** `ERVONET.apk` (~98.6 MB, Build Date: November 4, 2026 - MapLibre + OpenFreeMap Actual Offline Vector Map & Offline Regions Engine)
+> **Latest Release:** `ERVONET.apk` (~98.6 MB, Build Date: November 4, 2026 - Real-Time Exact Live GPS Positioning & Auto-Centering on MapLibre Vector Map)
 
 ---
 
@@ -157,6 +157,18 @@ flowchart TD
 - **Geographic Peer & User Plotting:** Renders the local operator (YOU) with a pulsing tactical beacon, and plots nearby mesh peers at real-world coordinates derived from BLE distance estimations.
 - **Interactive Map Dossier:** Tapping any peer marker on the actual map opens a tactical dossier displaying device callsign, hardware ID (`ERVO-XXXX`), signal strength (dBm), distance (~Xm), and an immediate `Open Dedicated Chat ➔` navigation shortcut.
 
+#### 12. Real-Time Exact Live GPS Positioning & Auto-Centering Engine (`LocationManager`)
+- **Problem Solved:** MapLibre vector map previously relied on a static fallback default coordinate (`[91.7362, 26.1445]`), preventing the map from centering on the user's actual physical location.
+- **How It Was Implemented:**
+  - Integrated `@maplibre/maplibre-react-native`'s native Android `LocationManager` and vector `UserLocation` component.
+  - Implemented runtime Android fine and coarse location permission requests (`PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`).
+  - Implemented real-time location listener (`LocationManager.addListener`) and instant cached fix retrieval (`LocationManager.getCurrentPosition()`).
+  - Auto-centers the map camera onto the user's exact physical coordinates upon the first GPS lock with smooth animation (`cameraRef.current?.flyTo({ center: [longitude, latitude], zoom: 16 })`).
+  - Placed native vector user location puck (`<UserLocation animated accuracy heading={false} />`) and high-tech pulsing tactical YOU marker at the real-world GPS coordinates.
+  - Re-anchored BLE peer spatial pins relative to the user's live physical GPS location so nearby nodes appear accurately around the operator.
+  - Added real-time GPS status overlay badge displaying exact latitude, longitude, and accuracy in meters (`📍 GPS FIXED • XX.XXXXX°N, YY.YYYYY°E (±Xm)`).
+  - Configured 1-tap Recenter (`⌖`) to fly smoothly to the device's real-time position.
+
 ---
 
 ## 4. Task & Dependency Log
@@ -184,6 +196,7 @@ The following matrix documents all completed engineering phases, architectural d
 | **TASK-17** | **Dedicated Full-Screen Chat Page & Clean Hub Restructuring**<br>Separated chat into its own dedicated screen; eliminated cramped multi-stack clutter | `COMPLETED` | React Native Navigation lifecycle, BackHandler, Component modularization | `ChatScreen.tsx`<br>`MainScreen.tsx`<br>`NearbyPeopleBar.tsx` | Verified: Chat has its own dedicated full-height page (`ChatScreen.tsx`) with back navigation (`← Hub`), target connection indicator, and emergency preset chips; Hub displays clean Nearby People cards with live distance/dBm preserved, crisis channels, and conversation previews; Android hardware back button cleanly navigates back to Hub. |
 | **TASK-18** | **Offline Tactical Mesh Radar Map & Proximity Visualization**<br>Replaced redundant chat list with zero-internet offline radar map; plotted peers on concentric distance rings (15m/30m/50m) with live signal distance and interactive dossier | `COMPLETED` | BLE RSSI log-distance path loss, Vector geometry, Concentric range scaling | `OfflineMeshMap.tsx`<br>`MainScreen.tsx`<br>`distance.ts` | Verified: Removed redundant vertical chat list; Hub renders tactical radar map with concentric rings (15m, 30m, 50m), crosshairs, cardinal markers, and pulsing center node (YOU); nearby peers plotted with ~Xm distance badges; tapping pin opens tactical dossier with 1-tap "Open Dedicated Chat ➔" navigation. |
 | **TASK-19** | **MapLibre + OpenFreeMap Actual Offline Vector Map & Shifted Radar Map**<br>Shifted tactical radar map into Nearby Devices section; integrated MapLibre React Native v11+ with OpenFreeMap vector styles and local offline region download engine on Main Hub | `COMPLETED` | `@maplibre/maplibre-react-native` v11.5.1, OpenFreeMap styles, React Native New Architecture, Android Native C++/CMake | `OfflineMapLibre.tsx`<br>`OfflineMeshMap.tsx`<br>`ScannedDevicesSection.tsx`<br>`MainScreen.tsx`<br>`package.json` | Verified: Shifted radar map to Nearby Devices section; built actual MapLibre vector map on Hub with OpenFreeMap `liberty`/`positron`/`bright` styles; integrated `OfflineManager` with current viewport & preset regional pack downloads; plotted peer markers with live distance/dBm dossiers; clean Gradle `assembleRelease` build (code 0). |
+| **TASK-20** | **Real-Time Exact Live GPS Positioning & Auto-Centering on Offline Map**<br>Fixed static fallback coordinates; integrated native Android LocationManager, runtime fine location permissions, live GPS satellite tracking, and auto-centering | `COMPLETED` | Android `ACCESS_FINE_LOCATION`, MapLibre `LocationManager`, `UserLocation` | `OfflineMapLibre.tsx` | Verified: Map now requests runtime fine location permissions; auto-centers camera onto user's physical GPS coordinates upon satellite lock (`flyTo`); displays live accuracy ribbon (`±Xm`); anchors peer markers relative to real user coordinates; smooth 1-tap Recenter (`⌖`); clean Gradle `assembleRelease` build (code 0). |
 
 ---
 
