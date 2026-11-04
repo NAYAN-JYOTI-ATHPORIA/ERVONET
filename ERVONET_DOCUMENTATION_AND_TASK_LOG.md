@@ -4,7 +4,7 @@
 > **Acronym:** **E**mergency **R**elay **V**ia **O**ffline **N**odes for **E**mergency **T**ransmission  
 > **Target Environment:** Infrastructure-Denied, Disaster, Battlefield, and Remote Crisis Scenarios (Zero Internet, Zero Cellular, Zero Wi-Fi)  
 > **Platform:** Android (Physical Devices & Standalone Release APK)  
-> **Latest Release:** `ERVONET.apk` (~53.2 MB, Build Date: November 4, 2026 - Tactical Offline Mesh Radar Map & Proximity Positioning)
+> **Latest Release:** `ERVONET.apk` (~98.6 MB, Build Date: November 4, 2026 - MapLibre + OpenFreeMap Actual Offline Vector Map & Offline Regions Engine)
 
 ---
 
@@ -23,6 +23,9 @@ Using **Bluetooth Low Energy (BLE)** in concurrent dual-role topology (simultane
 | **Mobile Framework** | React Native | `0.87.1` (React `19.2.3`) | UI rendering, reactive state management, cross-layer bridge |
 | **Language** | TypeScript | `6.0.3` | Type-safe business logic, schema parsing, state contracts |
 | **Native Runtime** | Android Native (Kotlin / Java) | Kotlin `2.0+`, Java 17 | Direct access to Android BLE stack (`android.bluetooth.*`) |
+| **Vector Map Engine** | MapLibre React Native | `@maplibre/maplibre-react-native` `v11.5.1` | Native vector tile rendering engine with C++ GPU acceleration |
+| **Vector Tile Host** | OpenFreeMap | Open-Source / Free | Free vector map tile endpoints (`liberty`, `positron`, `bright`) |
+| **Offline Map Cache** | MapLibre `OfflineManager` | Native SQLite Tile Store | Complete offline region downloading & tile pack retention |
 | **Android Target** | Android SDK & Build Tools | API 35 (VanillaIceCream), Build Tools `35.0.0` | Modern permission model, Android 12-15 runtime compatibility |
 | **Build System** | Gradle & Android Gradle Plugin | Gradle `9.4.1`, AGP `8.7.2` | Clean release APK packaging (`assembleRelease`) |
 | **Native Bridge** | NativeModules & NativeEventEmitter | React Native Core | Bidirectional async event bridge (`ResQNetBleModule.kt`) |
@@ -141,11 +144,18 @@ flowchart TD
 - **Native Android Hardware Back Support:** Integrates React Native `BackHandler` so pressing Android's physical back button smoothly returns to the Hub without closing the application.
 
 #### 10. Offline Tactical Mesh Radar Map & Proximity Visualization (`OfflineMeshMap.tsx`)
-- **Zero-Internet Spatial Radar:** Replaced the redundant vertical chat list on the Hub with an interactive tactical offline vector radar map. It requires zero cloud tile downloads, zero cellular data, and zero external GPS coordinates.
+- **Zero-Internet Spatial Radar:** Provides an interactive tactical offline vector radar map requiring zero cloud tile downloads, zero cellular data, and zero external GPS coordinates.
 - **Concentric Proximity Range Rings:** Renders three concentric distance rings (Outer, Middle, Inner) with live zoom range toggles (`15m`, `30m`, `50m`) to match varying emergency operational scales (e.g. collapsed buildings vs. open search zones).
 - **Log-Distance RF Propagation Model:** Converts raw BLE RSSI readings into real-world physical distance estimations ($d = 10^{\frac{TxPower - RSSI}{10 \cdot n}}$) calibrated for disaster debris and indoor path loss ($n = 2.4, TxPower = -59\text{ dBm}$).
 - **Stable ID-Derived Cardinal Bearings:** Derives deterministic spatial polar angles from peer node IDs ($\theta = \text{hash}(\text{NodeID}) \pmod{360}$) so peer positions remain rock-steady on the radar canvas without jittering across scan intervals.
-- **Interactive Node Dossier & Instant Dispatch:** Tapping any peer node pin on the radar highlights the node and surfaces an interactive tactical dossier detailing callsign, device ID (`ERVO-XXXX`), connection state, live dBm, and estimated distance (~Xm), accompanied by a direct 1-tap `Open Dedicated Chat ➔` action button.
+- **Shifted to Nearby Devices Section:** Shifted directly into the **Nearby Devices** section (`ScannedDevicesSection.tsx`), allowing operators to monitor RF proximity and spatial radar tracking right alongside hardware discovery cards.
+
+#### 11. MapLibre + OpenFreeMap Actual Offline Vector Map & Local Regions (`OfflineMapLibre.tsx`)
+- **Native Vector Engine on New Architecture:** Powered by `@maplibre/maplibre-react-native` (v11.5.1) utilizing C++ hardware-accelerated OpenGL/Vulkan rendering on React Native's New Architecture (`newArchEnabled=true`).
+- **OpenFreeMap Integration:** Consumes open-source, non-restricted vector tile endpoints (`https://tiles.openfreemap.org/styles/liberty`, `positron`, `bright`) with an instant on-map style switcher pill.
+- **Local Offline Region Management (`OfflineManager`):** Integrates MapLibre's native SQLite offline pack database. Operators can download the current viewport or select 1-tap crisis presets (`Local Hub 10km`, `Disaster Sector 25km`) directly into phone storage with live download progress (% and tile counts). Once downloaded, the map operates 100% offline without cellular or Wi-Fi.
+- **Geographic Peer & User Plotting:** Renders the local operator (YOU) with a pulsing tactical beacon, and plots nearby mesh peers at real-world coordinates derived from BLE distance estimations.
+- **Interactive Map Dossier:** Tapping any peer marker on the actual map opens a tactical dossier displaying device callsign, hardware ID (`ERVO-XXXX`), signal strength (dBm), distance (~Xm), and an immediate `Open Dedicated Chat ➔` navigation shortcut.
 
 ---
 
@@ -173,6 +183,7 @@ The following matrix documents all completed engineering phases, architectural d
 | **TASK-16** | **Git Remote Synchronization & Historical Progressive Timeline**<br>Full repo setup on GitHub with chronological commit history (Sept 10 – Nov 4) | `COMPLETED` | Git branching, Author/Committer timestamps, Remote push | `git history`<br>`README.md`<br>`.gitignore`<br>`ERVONET_DOCUMENTATION_AND_TASK_LOG.md` | Verified: Successfully generated 15 progressive chronological commits from 10th September 2026 to 4th November 2026; set author to Nayan Jyoti Athporia; pushed cleanly to remote repository `https://github.com/NAYAN-JYOTI-ATHPORIA/ERVONET.git`. |
 | **TASK-17** | **Dedicated Full-Screen Chat Page & Clean Hub Restructuring**<br>Separated chat into its own dedicated screen; eliminated cramped multi-stack clutter | `COMPLETED` | React Native Navigation lifecycle, BackHandler, Component modularization | `ChatScreen.tsx`<br>`MainScreen.tsx`<br>`NearbyPeopleBar.tsx` | Verified: Chat has its own dedicated full-height page (`ChatScreen.tsx`) with back navigation (`← Hub`), target connection indicator, and emergency preset chips; Hub displays clean Nearby People cards with live distance/dBm preserved, crisis channels, and conversation previews; Android hardware back button cleanly navigates back to Hub. |
 | **TASK-18** | **Offline Tactical Mesh Radar Map & Proximity Visualization**<br>Replaced redundant chat list with zero-internet offline radar map; plotted peers on concentric distance rings (15m/30m/50m) with live signal distance and interactive dossier | `COMPLETED` | BLE RSSI log-distance path loss, Vector geometry, Concentric range scaling | `OfflineMeshMap.tsx`<br>`MainScreen.tsx`<br>`distance.ts` | Verified: Removed redundant vertical chat list; Hub renders tactical radar map with concentric rings (15m, 30m, 50m), crosshairs, cardinal markers, and pulsing center node (YOU); nearby peers plotted with ~Xm distance badges; tapping pin opens tactical dossier with 1-tap "Open Dedicated Chat ➔" navigation. |
+| **TASK-19** | **MapLibre + OpenFreeMap Actual Offline Vector Map & Shifted Radar Map**<br>Shifted tactical radar map into Nearby Devices section; integrated MapLibre React Native v11+ with OpenFreeMap vector styles and local offline region download engine on Main Hub | `COMPLETED` | `@maplibre/maplibre-react-native` v11.5.1, OpenFreeMap styles, React Native New Architecture, Android Native C++/CMake | `OfflineMapLibre.tsx`<br>`OfflineMeshMap.tsx`<br>`ScannedDevicesSection.tsx`<br>`MainScreen.tsx`<br>`package.json` | Verified: Shifted radar map to Nearby Devices section; built actual MapLibre vector map on Hub with OpenFreeMap `liberty`/`positron`/`bright` styles; integrated `OfflineManager` with current viewport & preset regional pack downloads; plotted peer markers with live distance/dBm dossiers; clean Gradle `assembleRelease` build (code 0). |
 
 ---
 
@@ -182,9 +193,9 @@ The following matrix documents all completed engineering phases, architectural d
 
 | Distribution Target | Path | Size | Description |
 |---|---|---|---|
-| **Root Distribution** | `ERVONET.apk` | ~53.1 MB | Latest signed release APK ready for sideloading |
-| **Universal Release** | `app-release.apk` | ~53.1 MB | Standard release package copy |
-| **Repository Output** | `resqnet-offline-communication/release/ERVONET.apk` | ~53.1 MB | Archived build in project release directory |
+| **Root Distribution** | `ERVONET.apk` | ~98.6 MB | Latest signed release APK ready for sideloading |
+| **Universal Release** | `app-release.apk` | ~98.6 MB | Standard release package copy |
+| **Repository Output** | `resqnet-offline-communication/release/ERVONET.apk` | ~98.6 MB | Archived build in project release directory |
 
 ### Two-Phone Physical Verification Workflow
 

@@ -15,6 +15,7 @@ interface OfflineMeshMapProps {
   peers: PeerNode[];
   onOpenChat: (targetId: string) => void;
   onConnectPeer?: (address: string) => void;
+  style?: any;
 }
 
 // Consistent angle derivation based on peer identity string
@@ -34,6 +35,7 @@ export const OfflineMeshMap: React.FC<OfflineMeshMapProps> = ({
   peers,
   onOpenChat,
   onConnectPeer,
+  style,
 }) => {
   const [maxRange, setMaxRange] = useState<number>(30); // 15m, 30m, 50m
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export const OfflineMeshMap: React.FC<OfflineMeshMapProps> = ({
   const MAX_RADIUS = CENTER - 26;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, style]}>
       {/* Top Map Toolbar & Range Selectors */}
       <View style={styles.headerRow}>
         <View>
@@ -584,3 +586,4 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 });
+

@@ -14,7 +14,7 @@ import { NearbyPeopleBar } from '../components/NearbyPeopleBar';
 import { ScannedDevicesSection } from '../components/ScannedDevicesSection';
 import { SettingsModal } from '../components/SettingsModal';
 import { CompulsoryUsernameModal } from '../components/CompulsoryUsernameModal';
-import { OfflineMeshMap } from '../components/OfflineMeshMap';
+import { OfflineMapLibre } from '../components/OfflineMapLibre';
 import { ChatScreen } from './ChatScreen';
 import { bleService } from '../services/bleService';
 import { bleBridge } from '../services/nativeBleBridge';
@@ -238,7 +238,7 @@ export const MainScreen: React.FC = () => {
               activeTab === 'MESH_MAP' && styles.tabTextActive,
             ]}
           >
-            Mesh Radar & Hub
+            Offline Map & Hub
           </Text>
         </TouchableOpacity>
 
@@ -292,8 +292,8 @@ export const MainScreen: React.FC = () => {
             outboxCount={outboxCount}
           />
 
-          {/* Tactical Offline Mesh Map showing spatial distribution and relative node locations */}
-          <OfflineMeshMap
+          {/* Real Offline Map with MapLibre, OpenFreeMap & Locally Downloaded Regions */}
+          <OfflineMapLibre
             localNodeId={localConfig.deviceId || localConfig.nodeId}
             localName={localConfig.displayName || localConfig.name}
             peers={peers}
@@ -302,7 +302,7 @@ export const MainScreen: React.FC = () => {
           />
         </ScrollView>
       ) : (
-        /* Dedicated Scanned Devices Section */
+        /* Dedicated Scanned Devices Section with Shifted Radar Map */
         <ScannedDevicesSection
           peers={peers}
           isScanning={radioState.isScanning}
@@ -311,6 +311,8 @@ export const MainScreen: React.FC = () => {
           onConnectPeer={handleConnectPeer}
           onDisconnectPeer={handleDisconnectPeer}
           onToggleScan={handleToggleScan}
+          localNodeId={localConfig.deviceId || localConfig.nodeId}
+          localName={localConfig.displayName || localConfig.name}
         />
       )}
 

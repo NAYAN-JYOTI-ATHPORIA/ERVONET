@@ -9,6 +9,7 @@ import {
 import { PeerNode } from '../types/ble';
 import { getSignalQuality } from '../utils/distance';
 import { formatTimeAgo } from '../utils/formatters';
+import { OfflineMeshMap } from './OfflineMeshMap';
 
 interface ScannedDevicesSectionProps {
   peers: PeerNode[];
@@ -18,6 +19,8 @@ interface ScannedDevicesSectionProps {
   onConnectPeer: (address: string) => void;
   onDisconnectPeer: (address: string) => void;
   onToggleScan: () => void;
+  localNodeId?: string;
+  localName?: string;
 }
 
 const getCleanUsername = (peer: PeerNode): string => {
@@ -51,6 +54,8 @@ export const ScannedDevicesSection: React.FC<ScannedDevicesSectionProps> = ({
   onConnectPeer,
   onDisconnectPeer,
   onToggleScan,
+  localNodeId,
+  localName,
 }) => {
   const connectedPeers = peers.filter((p) => p.connectionState === 'CONNECTED');
   const availablePeers = peers.filter((p) => p.connectionState !== 'CONNECTED');
@@ -236,65 +241,82 @@ export const ScannedDevicesSection: React.FC<ScannedDevicesSectionProps> = ({
         </TouchableOpacity>
       </View>
 
-      {/* Main List */}
-      {peers.length === 0 ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>Scanning For Nearby People...</Text>
-          <Text style={styles.emptyDesc}>
-            ERVONET filters out background Bluetooth noise (smartwatches, TVs, cars). Only real phones running ERVONET will appear here.
-          </Text>
-          <TouchableOpacity
-            style={styles.emptyActionBtn}
-            onPress={onToggleScan}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.emptyActionText}>
-              {isScanning ? 'Continuous Scanning Active...' : 'Restart BLE Scan'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <ScrollView
-          style={styles.list}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Section 1: Connected Users */}
-          {connectedPeers.length > 0 && (
-            <View style={styles.groupSection}>
-              <View style={styles.groupHeader}>
-                <Text style={styles.groupTitle}>CONNECTED IN MESH</Text>
-                <View style={styles.groupBadgeGreen}>
-                  <Text style={styles.groupBadgeGreenText}>
-                    {connectedPeers.length} Linked
-                  </Text>
-                </View>
-              </View>
-              {connectedPeers.map((peer) => renderDeviceCard(peer, true))}
-            </View>
-          )}
+      {/* Scrollable Feed: Shifted Tactical Radar Map + Scanned Devices */}
+      <ScrollView
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Tactical Mesh Radar Map shifted to Nearby Devices section */}
+        <OfflineMeshMap
+          localNodeId={localNodeId || 'ERVO-LOCAL'}
+          localName={localName || 'Me'}
+          peers={peers}
+          onOpenChat={onSelectAndChat}
+          onConnectPeer={onConnectPeer}
+          style={styles.radarCard}
+        />
 
-          {/* Section 2: Discovered Users In Range */}
-          {availablePeers.length > 0 && (
-            <View style={styles.groupSection}>
-              <View style={styles.groupHeader}>
-                <Text style={styles.groupTitle}>IN RANGE (AVAILABLE)</Text>
-                <View style={styles.groupBadgeSlate}>
-                  <Text style={styles.groupBadgeSlateText}>
-                    {availablePeers.length} Found
-                  </Text>
+        {peers.length === 0 ? (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>Scanning For Nearby People...</Text>
+            <Text style={styles.emptyDesc}>
+              ERVONET filters out background Bluetooth noise (smartwatches, TVs, cars). Only real phones running ERVONET will appear here.
+            </Text>
+            <TouchableOpacity
+              style={styles.emptyActionBtn}
+              onPress={onToggleScan}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.emptyActionText}>
+                {isScanning ? 'Continuous Scanning Active...' : 'Restart BLE Scan'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <>
+            {/* Section 1: Connected Users */}
+            {connectedPeers.length > 0 && (
+              <View style={styles.groupSection}>
+                <View style={styles.groupHeader}>
+                  <Text style={styles.groupTitle}>CONNECTED IN MESH</Text>
+                  <View style={styles.groupBadgeGreen}>
+                    <Text style={styles.groupBadgeGreenText}>
+                      {connectedPeers.length} Linked
+                    </Text>
+                  </View>
                 </View>
+                {connectedPeers.map((peer) => renderDeviceCard(peer, true))}
               </View>
-              {availablePeers.map((peer) => renderDeviceCard(peer, false))}
-            </View>
-          )}
-        </ScrollView>
-      )}
+            )}
+
+            {/* Section 2: Discovered Users In Range */}
+            {availablePeers.length > 0 && (
+              <View style={styles.groupSection}>
+                <View style={styles.groupHeader}>
+                  <Text style={styles.groupTitle}>IN RANGE (AVAILABLE)</Text>
+                  <View style={styles.groupBadgeSlate}>
+                    <Text style={styles.groupBadgeSlateText}>
+                      {availablePeers.length} Found
+                    </Text>
+                  </View>
+                </View>
+                {availablePeers.map((peer) => renderDeviceCard(peer, false))}
+              </View>
+            )}
+          </>
+        )}
+      </ScrollView>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
+  radarCard: {
+    marginHorizontal: 0,
+    marginTop: 0,
+    marginBottom: 12,
+  },
   container: {
     flex: 1,
     backgroundColor: '#050811', // Pure OLED power saving dark
