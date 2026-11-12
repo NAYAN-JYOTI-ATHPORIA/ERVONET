@@ -19,8 +19,6 @@ interface ScannedDevicesSectionProps {
   onConnectPeer: (address: string) => void;
   onDisconnectPeer: (address: string) => void;
   onToggleScan: () => void;
-  localNodeId?: string;
-  localName?: string;
 }
 
 const getCleanUsername = (peer: PeerNode): string => {
@@ -54,14 +52,15 @@ export const ScannedDevicesSection: React.FC<ScannedDevicesSectionProps> = ({
   onConnectPeer,
   onDisconnectPeer,
   onToggleScan,
-  localNodeId,
-  localName,
 }) => {
   const connectedPeers = peers.filter((p) => p.connectionState === 'CONNECTED');
   const availablePeers = peers.filter((p) => p.connectionState !== 'CONNECTED');
 
   const renderDeviceCard = (peer: PeerNode, isConnected: boolean) => {
     const isConnecting = peer.connectionState === 'CONNECTING';
+    const isEspRelay =
+      !peer.isMultiHop &&
+      (peer.role === 'Relay Node' || /^ERVO-ES/i.test(peer.nodeId || '') || /ESP32|RELAY/i.test(peer.name || ''));
     const signal = getSignalQuality(peer.rssi);
     const username = getCleanUsername(peer);
     const initials = getInitials(username);
@@ -113,6 +112,11 @@ export const ScannedDevicesSection: React.FC<ScannedDevicesSectionProps> = ({
               <View style={styles.fixedIdBadge}>
                 <Text style={styles.fixedIdText}>{peer.nodeId || 'ERVO-NODE'}</Text>
               </View>
+              {isEspRelay && (
+                <View style={styles.relayBadge}>
+                  <Text style={styles.relayBadgeText}>IOT RELAY</Text>
+                </View>
+              )}
               <View
                 style={[
                   styles.statusPill,
@@ -249,8 +253,6 @@ export const ScannedDevicesSection: React.FC<ScannedDevicesSectionProps> = ({
       >
         {/* Tactical Mesh Radar Map shifted to Nearby Devices section */}
         <OfflineMeshMap
-          localNodeId={localNodeId || 'ERVO-LOCAL'}
-          localName={localName || 'Me'}
           peers={peers}
           onOpenChat={onSelectAndChat}
           onConnectPeer={onConnectPeer}
@@ -370,9 +372,6 @@ const styles = StyleSheet.create({
   scanBtnActive: {
     borderColor: '#0284C7',
     backgroundColor: '#082F49',
-  },
-  scanBtnIcon: {
-    fontSize: 12,
   },
   scanBtnText: {
     fontSize: 11.5,
@@ -513,6 +512,20 @@ const styles = StyleSheet.create({
     color: '#38BDF8',
     letterSpacing: 0.3,
   },
+  relayBadge: {
+    backgroundColor: '#2E1065',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 0.8,
+    borderColor: '#A855F7',
+  },
+  relayBadgeText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    color: '#E9D5FF',
+    letterSpacing: 0.3,
+  },
   statusPill: {
     paddingHorizontal: 5,
     paddingVertical: 1,
@@ -592,9 +605,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#FFFFFF',
   },
-  actionIcon: {
-    fontSize: 11.5,
-  },
   secondaryChatBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -605,9 +615,6 @@ const styles = StyleSheet.create({
     paddingVertical: 6.5,
     paddingHorizontal: 10,
     borderRadius: 7,
-  },
-  secondaryChatIcon: {
-    fontSize: 11,
   },
   secondaryChatText: {
     fontSize: 11,
@@ -649,18 +656,6 @@ const styles = StyleSheet.create({
     marginTop: 20,
     borderWidth: 1,
     borderColor: '#1E293B',
-  },
-  emptyIconCircle: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#1E293B',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 14,
-  },
-  emptyIcon: {
-    fontSize: 28,
   },
   emptyTitle: {
     fontSize: 15,

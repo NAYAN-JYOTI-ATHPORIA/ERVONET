@@ -15,6 +15,8 @@ export interface BleBridgeEvents {
   onMessageDelivered: (targetAddress: string, latencyMs: number) => void;
   onScanStatusChanged: (isScanning: boolean) => void;
   onAdvertisingStatusChanged: (isAdvertising: boolean) => void;
+  onLocationUpdated?: (loc: { latitude: number; longitude: number; accuracy?: number; timestamp?: number }) => void;
+  onBluetoothStateChanged?: (state: { isEnabled: boolean; state?: number }) => void;
 }
 
 class NativeBleBridge {
@@ -36,8 +38,21 @@ class NativeBleBridge {
   }
 
   private initializeSimulatedPeers() {
-    // Start with empty peer list; only actual devices discovered via Bluetooth appear
     this.simulatedPeers.clear();
+    // Simulated testbed multi-hop neighbor: Node B (Bravo)
+    this.simulatedPeers.set('AA:BB:CC:11:22:01', {
+      id: 'AA:BB:CC:11:22:01',
+      name: 'Bravo Node',
+      nodeId: 'ERVO-BBBB',
+      role: 'Relay Node',
+      rssi: -62,
+      distanceMeters: 3.0,
+      connectionState: 'DISCOVERED',
+      lastSeen: Date.now(),
+      packetsReceived: 0,
+      packetsSent: 0,
+      isRelayCapable: true,
+    });
   }
 
   public hasNativeBleSupport(): boolean {
@@ -98,17 +113,24 @@ class NativeBleBridge {
     if (this.isNativeAvailable && this.eventEmitter) {
       this.eventEmitter.addListener('onNodeDiscovered', (data: any) => {
         const distance = estimateDistanceMeters(data.rssi, data.txPower || -59);
+        const nodeId = data.nodeId || `NODE-${data.id.slice(-4)}`;
+        const name = data.name || data.nodeId || 'Unknown Peer';
+        const isEspRelay =
+          /^ERVO-ES/i.test(nodeId) ||
+          /^RESQ-ES/i.test(nodeId) ||
+          /ESP32|RELAY/i.test(name);
         const node: PeerNode = {
           id: data.id,
-          name: data.name || data.nodeId || 'Unknown Peer',
-          nodeId: data.nodeId || `NODE-${data.id.slice(-4)}`,
-          role: 'Field Worker',
+          name,
+          nodeId,
+          role: isEspRelay ? 'Relay Node' : 'Field Worker',
           rssi: data.rssi,
           distanceMeters: distance,
           connectionState: 'DISCOVERED',
           lastSeen: Date.now(),
           packetsReceived: 0,
           packetsSent: 0,
+          isRelayCapable: true,
         };
         callbacks.onNodeDiscovered(node);
       });
@@ -142,6 +164,26 @@ class NativeBleBridge {
 
       this.eventEmitter.addListener('onAdvertisingStatusChanged', (data: any) => {
         callbacks.onAdvertisingStatusChanged(data.isAdvertising);
+      });
+
+      this.eventEmitter.addListener('onLocationUpdated', (data: any) => {
+        if (data && callbacks.onLocationUpdated) {
+          callbacks.onLocationUpdated({
+            latitude: data.latitude,
+            longitude: data.longitude,
+            accuracy: data.accuracy,
+            timestamp: data.timestamp,
+          });
+        }
+      });
+
+      this.eventEmitter.addListener('onBluetoothStateChanged', (data: any) => {
+        if (data && callbacks.onBluetoothStateChanged) {
+          callbacks.onBluetoothStateChanged({
+            isEnabled: !!data.isEnabled,
+            state: data.state,
+          });
+        }
       });
     }
   }
@@ -215,6 +257,47 @@ class NativeBleBridge {
     return true;
   }
 
+  public async openBluetoothSettings(): Promise<boolean> {
+    if (this.isNativeAvailable && ResQNetBle?.openBluetoothSettings) {
+      try {
+        return await ResQNetBle.openBluetoothSettings();
+      } catch (e) {
+        console.warn('openBluetoothSettings failed:', e);
+      }
+    }
+    return false;
+  }
+
+  public async getDeviceLocation(): Promise<{ latitude: number; longitude: number; accuracy?: number; timestamp?: number } | null> {
+    if (this.isNativeAvailable && ResQNetBle?.getDeviceLocation) {
+      try {
+        const loc = await ResQNetBle.getDeviceLocation();
+        if (loc && typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
+          return {
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+            accuracy: loc.accuracy,
+            timestamp: loc.timestamp,
+          };
+        }
+      } catch (e) {
+        console.warn('Native getDeviceLocation failed:', e);
+      }
+    }
+    return null;
+  }
+
+  public async startLocationUpdates(): Promise<boolean> {
+    if (this.isNativeAvailable && ResQNetBle?.startLocationUpdates) {
+      try {
+        return await ResQNetBle.startLocationUpdates();
+      } catch (e) {
+        console.warn('Native startLocationUpdates failed:', e);
+      }
+    }
+    return false;
+  }
+
   public async startAdvertising(
     nodeId: string,
     nodeRole: NodeRole,
@@ -280,15 +363,83 @@ class NativeBleBridge {
             if (this.isSimScanning) {
               peer.connectionState = 'CONNECTED';
               this.simListeners?.onNodeConnected(peer.id, peer.nodeId);
+
+              // In simulation mode, simulate receiving multi-hop LSA network: B -> C -> D -> E -> F
+              setTimeout(() => {
+                if (this.isSimScanning && this.simListeners) {
+                  const bLsa = {
+                    type: 'LSA',
+                    originNodeId: 'ERVO-BBBB',
+                    originName: 'Bravo Node',
+                    sequenceNumber: 1,
+                    neighbors: [
+                      { nodeId: 'ERVO-CCCC', name: 'Charlie Node', rssi: -68 },
+                    ],
+                    timestamp: Date.now(),
+                  };
+                  const cLsa = {
+                    type: 'LSA',
+                    originNodeId: 'ERVO-CCCC',
+                    originName: 'Charlie Node',
+                    sequenceNumber: 1,
+                    neighbors: [
+                      { nodeId: 'ERVO-BBBB', name: 'Bravo Node', rssi: -68 },
+                      { nodeId: 'ERVO-DDDD', name: 'Delta Node', rssi: -65 },
+                    ],
+                    timestamp: Date.now(),
+                  };
+                  const dLsa = {
+                    type: 'LSA',
+                    originNodeId: 'ERVO-DDDD',
+                    originName: 'Delta Node',
+                    sequenceNumber: 1,
+                    neighbors: [
+                      { nodeId: 'ERVO-CCCC', name: 'Charlie Node', rssi: -65 },
+                      { nodeId: 'ERVO-EEEE', name: 'Echo Node', rssi: -70 },
+                    ],
+                    timestamp: Date.now(),
+                  };
+                  const eLsa = {
+                    type: 'LSA',
+                    originNodeId: 'ERVO-EEEE',
+                    originName: 'Echo Node',
+                    sequenceNumber: 1,
+                    neighbors: [
+                      { nodeId: 'ERVO-DDDD', name: 'Delta Node', rssi: -70 },
+                      { nodeId: 'ERVO-FFFF', name: 'Foxtrot Node', rssi: -64 },
+                    ],
+                    timestamp: Date.now(),
+                  };
+
+                  for (const l of [bLsa, cLsa, dLsa, eLsa]) {
+                    const p: ResQNetPacket = {
+                      messageId: `sim-lsa-${l.originNodeId}-${Date.now()}`,
+                      senderId: l.originNodeId,
+                      senderName: l.originName,
+                      destinationId: '__ROUTING_CONTROL__',
+                      timestamp: Date.now(),
+                      ttl: 8,
+                      priority: 'NORMAL',
+                      messageType: 'ROUTING',
+                      payload: JSON.stringify(l),
+                      hopCount: 1,
+                      checksum: 'SIMLSA',
+                    };
+                    this.simListeners?.onMessageReceived(p, JSON.stringify(p));
+                  }
+                }
+              }, 800);
             }
           }, 800);
         }
         count++;
         this.simTimer = setTimeout(emitNextPeer, 1200);
+        this.simTimer?.unref?.();
       }
     };
 
     this.simTimer = setTimeout(emitNextPeer, 500);
+    this.simTimer?.unref?.();
 
     // Fluctuate RSSI slightly to simulate real RF path loss / worker movements
     if (!this.simRssiTimer) {
@@ -303,6 +454,7 @@ class NativeBleBridge {
           }
         }
       }, 4000);
+      this.simRssiTimer?.unref?.();
     }
 
     return true;
@@ -379,8 +531,11 @@ class NativeBleBridge {
     if (this.isNativeAvailable && !forceSimulation) {
       try {
         const chunks = chunkPacket(rawJson, packet.messageId);
-        for (const chunk of chunks) {
-          await ResQNetBle.sendMessage(targetAddress, chunk);
+        for (let i = 0; i < chunks.length; i++) {
+          await ResQNetBle.sendMessage(targetAddress, chunks[i]);
+          if (chunks.length > 1 && i < chunks.length - 1) {
+            await new Promise<void>((resolve) => setTimeout(() => resolve(), 12));
+          }
         }
         return true;
       } catch (e) {
@@ -390,22 +545,22 @@ class NativeBleBridge {
     }
 
     // In simulation mode: simulate over-the-air round-trip latency & ACK response
-    const isMultiHop = targetAddress === '11:22:33:77:88:99' || packet.destinationId === 'AID-POINT';
-    const latency = isMultiHop ? 85 : Math.floor(Math.random() * 30) + 35; // Multi-hop adds relay delay
+    const hops = packet.route && packet.route.length >= 2 ? packet.route.length - 1 : (packet.hopCount || 1);
+    const latency = hops > 1 ? hops * 50 : Math.floor(Math.random() * 30) + 35;
     setTimeout(() => {
       this.simListeners?.onMessageDelivered(targetAddress, latency);
 
       // Destination peer receives packet and returns ACK back across the mesh
-      if (packet.messageType !== 'ACK') {
-        const peer = this.simulatedPeers.get(targetAddress);
-        const peerNodeId = peer ? peer.nodeId : 'RESQ-PEER';
+      if (packet.messageType !== 'ACK' && packet.messageType !== 'ROUTING') {
+        const destId = packet.destinationId;
+        const responderId = destId !== 'BROADCAST' && destId ? destId : 'ERVO-FFFF';
         const ackPacket = createAckPacket(
-          { ...packet, hopCount: isMultiHop ? 2 : 1 },
-          peerNodeId
+          { ...packet, hopCount: hops },
+          responderId
         );
         setTimeout(() => {
           this.simListeners?.onMessageReceived(ackPacket, serializePacket(ackPacket));
-        }, isMultiHop ? 90 : 50);
+        }, latency);
       }
     }, latency);
 
@@ -424,8 +579,11 @@ class NativeBleBridge {
       try {
         const chunks = chunkPacket(rawJson, packet.messageId);
         let result = { deliveredCount: 0, totalNodes: 0 };
-        for (const chunk of chunks) {
-          result = await ResQNetBle.broadcastMessage(chunk);
+        for (let i = 0; i < chunks.length; i++) {
+          result = await ResQNetBle.broadcastMessage(chunks[i]);
+          if (chunks.length > 1 && i < chunks.length - 1) {
+            await new Promise<void>((resolve) => setTimeout(() => resolve(), 12));
+          }
         }
         return result;
       } catch (e) {
@@ -451,6 +609,18 @@ class NativeBleBridge {
     }, 50);
 
     return { deliveredCount: total, totalNodes: total };
+  }
+
+  public async shareOfflineMapDatabase(): Promise<boolean> {
+    if (this.isNativeAvailable && ResQNetBle.shareOfflineMapDatabase) {
+      try {
+        return await ResQNetBle.shareOfflineMapDatabase();
+      } catch (e: any) {
+        console.warn('Native shareOfflineMapDatabase error:', e);
+        throw e;
+      }
+    }
+    return false;
   }
 }
 

@@ -6,16 +6,18 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  Platform,
 } from 'react-native';
-import { MessageRecord, DeliveryStatus } from '../types/message';
+import { MessageRecord, DeliveryStatus, MapSectorPayload } from '../types/message';
 import { formatTime } from '../utils/formatters';
+import { isControlPacket } from '../protocol/packetSchema';
 
 interface ChatFeedProps {
   messages: MessageRecord[];
-  localNodeId: string;
   onClearChat?: () => void;
   onDeleteMessage?: (messageId: string) => void;
   onRetryMessage?: (messageId: string) => void;
+  onViewMapSector?: (sector: MapSectorPayload) => void;
 }
 
 const getStatusDisplay = (status: DeliveryStatus) => {
@@ -81,10 +83,10 @@ const getStatusDisplay = (status: DeliveryStatus) => {
 
 export const ChatFeed: React.FC<ChatFeedProps> = ({
   messages,
-  localNodeId,
   onClearChat,
   onDeleteMessage,
   onRetryMessage,
+  onViewMapSector,
 }) => {
   const scrollViewRef = useRef<any>(null);
 
@@ -114,7 +116,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
         ...(canRetry
           ? [
               {
-                text: '🔄 Retry Transmission',
+                text: 'Retry Transmission',
                 onPress: () => onRetryMessage!(record.id),
               },
             ]
@@ -157,9 +159,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
     );
   };
 
-  const nonAckMessages = messages.filter(
-    (m) => m.packet.messageType !== 'ACK'
-  );
+  const nonAckMessages = messages.filter((m) => !isControlPacket(m.packet));
 
   return (
     <View style={styles.container}>
@@ -175,7 +175,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             activeOpacity={0.7}
           >
-            <Text style={styles.clearBtnText}>🗑️ Clear Chat</Text>
+            <Text style={styles.clearBtnText}>CLEAR FEED</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -280,28 +280,115 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                     </View>
                   )}
 
-                  {/* Message Content */}
-                  <Text
-                    style={[
-                      styles.messageText,
-                      isOutgoing && styles.messageTextOutgoing,
-                      isSos && styles.messageTextSos,
-                    ]}
-                    selectable
-                  >
-                    {record.packet.payload}
-                  </Text>
+                  {/* Message Content or Tactical Map Sector Card */}
+                  {(() => {
+                    let mapSector: MapSectorPayload | null = null;
+                    if (record.packet.messageType === 'MAP_DATA') {
+                      try {
+                        const parsed = JSON.parse(record.packet.payload);
+                        if (parsed && (parsed.type === 'MAP_SECTOR' || Array.isArray(parsed.bounds))) {
+                          mapSector = parsed;
+                        }
+                      } catch {
+                        // Ignore non-JSON MAP_DATA payloads
+                      }
+                    }
+
+                    if (mapSector) {
+                      return (
+                        <View style={styles.mapSectorCard}>
+                          <View style={styles.mapSectorHeader}>
+                            <View style={styles.mapSectorBadge}>
+                              <Text style={styles.mapSectorBadgeText}>[TACTICAL MAP DATA]</Text>
+                            </View>
+                            <Text style={styles.mapSectorStyleText}>
+                              {mapSector.style ? mapSector.style.toUpperCase() : 'OFFLINE'}
+                            </Text>
+                          </View>
+                          <Text style={styles.mapSectorTitle}>{mapSector.name}</Text>
+                          <Text style={styles.mapSectorBounds}>
+                            Bounds: [{mapSector.bounds[0].toFixed(3)}°, {mapSector.bounds[1].toFixed(3)}°] ➔ [{mapSector.bounds[2].toFixed(3)}°, {mapSector.bounds[3].toFixed(3)}°]
+                          </Text>
+                          {onViewMapSector && (
+                            <TouchableOpacity
+                              style={styles.mapSectorBtn}
+                              onPress={() => onViewMapSector(mapSector!)}
+                              activeOpacity={0.75}
+                            >
+                              <Text style={styles.mapSectorBtnText}>VIEW SECTOR ON MAP ➔</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      );
+                    }
+
+                    return (
+                      <Text
+                        style={[
+                          styles.messageText,
+                          isOutgoing && styles.messageTextOutgoing,
+                          isSos && styles.messageTextSos,
+                        ]}
+                        selectable
+                      >
+                        {record.packet.payload}
+                      </Text>
+                    );
+                  })()}
+
+                  {/* Attached Live GPS Location Pill */}
+                  {record.packet.location && (
+                    <View
+                      style={[
+                        styles.gpsLocationBadge,
+                        isSos && styles.gpsLocationBadgeSos,
+                      ]}
+                    >
+                      <Text style={styles.gpsLocationIcon}>[GPS]</Text>
+                      <Text
+                        style={[
+                          styles.gpsLocationText,
+                          isSos && styles.gpsLocationTextSos,
+                        ]}
+                      >
+                        GPS: {record.packet.location.latitude.toFixed(5)}, {record.packet.location.longitude.toFixed(5)}
+                        {record.packet.location.accuracy ? ` (±${record.packet.location.accuracy}m)` : ''}
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Multi-Hop Dijkstra Route Path Display */}
+                  {record.packet.route && record.packet.route.length >= 2 && (
+                    <View style={styles.routeTraceWrap}>
+                      <Text style={styles.routeTraceTitle}>
+                        {record.packet.routingAlgo === 'DIJKSTRA' ? '[DIJKSTRA MESH ROUTE]' : '[MESH ROUTE]'} ({record.packet.route.length - 1} HOPS)
+                      </Text>
+                      <Text style={styles.routeTraceText}>
+                        {record.packet.route.map((n) => n.replace('ERVO-', '').replace('RESQ-', '')).join(' ➔ ')}
+                      </Text>
+                    </View>
+                  )}
 
                   {/* Footer with Timestamp, Mesh Hop Badge, and Delivery Receipts */}
                   <View style={styles.bubbleFooter}>
                     {!isOutgoing && (
-                      <View style={styles.hopBadge}>
-                        <Text style={styles.hopBadgeText}>
+                      <View
+                        style={[
+                          styles.hopBadge,
+                          (record.packet.hopCount || 0) > 1 ? styles.hopBadgeRelayed : undefined,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.hopBadgeText,
+                            (record.packet.hopCount || 0) > 1 ? styles.hopBadgeTextRelayed : undefined,
+                          ]}
+                        >
                           {record.packet.hopCount === 0 || !record.packet.hopCount
                             ? 'Direct'
                             : record.packet.hopCount === 1
                             ? '1 Hop'
-                            : `${record.packet.hopCount} Hops`}
+                            : `${record.packet.hopCount} Hops Relay`}
                         </Text>
                       </View>
                     )}
@@ -481,10 +568,39 @@ const styles = StyleSheet.create({
     borderColor: '#1E293B',
     marginRight: 2,
   },
+  hopBadgeRelayed: {
+    backgroundColor: '#1E1035',
+    borderColor: '#7E22CE',
+  },
   hopBadgeText: {
     fontSize: 9,
     fontWeight: '700',
     color: '#38BDF8',
+    letterSpacing: 0.3,
+  },
+  hopBadgeTextRelayed: {
+    color: '#C084FC',
+  },
+  routeTraceWrap: {
+    backgroundColor: '#0B0A1F',
+    borderWidth: 1,
+    borderColor: '#6B21A8',
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    marginTop: 6,
+  },
+  routeTraceTitle: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#D8B4FE',
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  routeTraceText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#E9D5FF',
     letterSpacing: 0.3,
   },
   timestampText: {
@@ -520,6 +636,34 @@ const styles = StyleSheet.create({
   failedBubble: {
     borderColor: '#EF4444',
     borderWidth: 1.2,
+  },
+  gpsLocationBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    borderColor: '#0284C7',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginTop: 6,
+    gap: 5,
+  },
+  gpsLocationBadgeSos: {
+    backgroundColor: '#450A0A',
+    borderColor: '#EF4444',
+  },
+  gpsLocationIcon: {
+    fontSize: 11,
+  },
+  gpsLocationText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#38BDF8',
+    letterSpacing: 0.3,
+  },
+  gpsLocationTextSos: {
+    color: '#FCA5A5',
   },
   emptyContainer: {
     alignItems: 'center',
@@ -568,5 +712,62 @@ const styles = StyleSheet.create({
     color: '#38BDF8',
     textAlign: 'center',
     lineHeight: 17,
+  },
+  mapSectorCard: {
+    backgroundColor: '#090D1A',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#0284C7',
+    padding: 10,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  mapSectorHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  mapSectorBadge: {
+    backgroundColor: '#0369A1',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  mapSectorBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#E0F2FE',
+    letterSpacing: 0.5,
+  },
+  mapSectorStyleText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#38BDF8',
+  },
+  mapSectorTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#F8FAFC',
+    marginBottom: 4,
+  },
+  mapSectorBounds: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
+    marginBottom: 8,
+  },
+  mapSectorBtn: {
+    backgroundColor: '#0284C7',
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  mapSectorBtnText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
   },
 });

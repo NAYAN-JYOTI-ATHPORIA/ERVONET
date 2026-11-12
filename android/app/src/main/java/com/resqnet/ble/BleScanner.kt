@@ -26,15 +26,20 @@ class BleScanner(
 ) {
     private val TAG = "ResQNetScanner"
     private var isScanning = false
+    private var shouldBeScanning = false
     private var autoConnectEnabled = true
-    private var scanIntervalMs: Long = 10000
+    private var scanIntervalMs: Long = 25000
+    private var lastScanStartMs: Long = 0L
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var periodicScanRunnable: Runnable? = null
+    private var scanWatchdogRunnable: Runnable? = null
 
     // Track fully ready GATT client connections where services have been discovered
     private val readyGatts = ConcurrentHashMap<String, BluetoothGatt>()
     private val pendingGatts = ConcurrentHashMap<String, BluetoothGatt>()
+    private val connectionWatchdogs = ConcurrentHashMap<String, Runnable>()
+    private val discoveryWatchdogs = ConcurrentHashMap<String, Runnable>()
     private val discoveredNodes = ConcurrentHashMap<String, DiscoveredNodeInfo>()
     private val negotiatedMtus = ConcurrentHashMap<String, Int>()
     private val lastConnectAttempt = ConcurrentHashMap<String, Long>()
@@ -43,7 +48,8 @@ class BleScanner(
     data class QueuedWrite(
         val targetAddress: String,
         val packetJson: String,
-        val callback: (Boolean, String?) -> Unit
+        val callback: (Boolean, String?) -> Unit,
+        var retryCount: Int = 0
     )
     private val writeQueues = ConcurrentHashMap<String, ConcurrentLinkedQueue<QueuedWrite>>()
     private val inFlightWrites = ConcurrentHashMap<String, QueuedWrite>()
@@ -51,6 +57,12 @@ class BleScanner(
 
     // Lookup to check if peer is already connected as Central on our GATT server
     var isCentralConnectedLookup: ((String) -> Boolean)? = null
+
+    // Lookup to check our own local device ID to filter out self-advertisements
+    var localDeviceIdLookup: (() -> String?)? = null
+
+    // Lookup to check our own local username to filter out self-advertisements
+    var localUsernameLookup: (() -> String?)? = null
 
     data class DiscoveredNodeInfo(
         val address: String,
@@ -80,7 +92,7 @@ class BleScanner(
             var parsedDeviceId: String? = null
             var parsedUsername: String? = null
 
-            if (hasResQNetMfg && mfgData != null) {
+            if (mfgData != null && mfgData.isNotEmpty()) {
                 try {
                     val rawStr = String(mfgData, StandardCharsets.UTF_8).trim()
                     if (rawStr.startsWith("E:") || rawStr.startsWith("R:")) {
@@ -91,18 +103,45 @@ class BleScanner(
                         if (parts.size >= 3 && parts[2].isNotBlank()) {
                             parsedUsername = parts[2].trim()
                         }
-                    } else if (rawStr.isNotBlank()) {
-                        parsedUsername = rawStr
                     }
                 } catch (e: Exception) { null }
             }
 
-            val fallbackDeviceId = "ERVO-${device.address.takeLast(4).replace(":", "").uppercase()}"
-            val assignedDeviceId = parsedDeviceId ?: fallbackDeviceId
-            val finalUsername = parsedUsername ?: assignedDeviceId
+            // Check if we already have a verified manufacturer signature cached for this address
+            val cachedNode = discoveredNodes[device.address]
+            val assignedDeviceId = parsedDeviceId ?: cachedNode?.nodeId
+            val finalUsername = parsedUsername ?: cachedNode?.name
 
-            val nodeId = assignedDeviceId
-            val devName = finalUsername
+            // STRICT APP-ONLY FILTER: Discard any peripheral that does not carry the verified ERVONET signature
+            // NEVER invent fallback devices from random Bluetooth MAC addresses
+            if (assignedDeviceId == null) {
+                return
+            }
+
+            val effectiveDeviceId = assignedDeviceId
+            val effectiveUsername = finalUsername ?: effectiveDeviceId
+
+            // STRICT SELF-FILTER: Immediately discard our own device if picked up by scanner
+            val myLocalId = localDeviceIdLookup?.invoke()
+            val myLocalName = localUsernameLookup?.invoke()
+
+            if (!myLocalId.isNullOrEmpty()) {
+                val cleanMyId = myLocalId.replace("ERVO-", "").replace("RESQ-", "").trim()
+                val cleanPeerId = effectiveDeviceId.replace("ERVO-", "").replace("RESQ-", "").trim()
+                if (cleanMyId.equals(cleanPeerId, ignoreCase = true)) {
+                    return
+                }
+            }
+
+            if (!myLocalName.isNullOrEmpty()) {
+                if (effectiveUsername.equals(myLocalName.trim(), ignoreCase = true) ||
+                    (parsedUsername != null && parsedUsername.equals(myLocalName.trim(), ignoreCase = true))) {
+                    return
+                }
+            }
+
+            val nodeId = effectiveDeviceId
+            val devName = effectiveUsername
             val rssi = result.rssi
             val txPower = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 result.txPower
@@ -122,12 +161,12 @@ class BleScanner(
 
             // Auto-connect to real ResQNet app peers if not already connected or connecting
             if (autoConnectEnabled) {
-                val isAlreadyCentral = isCentralConnectedLookup?.invoke(device.address) == true
                 val isAlreadyConnected = readyGatts.containsKey(device.address)
                 val isAlreadyConnecting = pendingGatts.containsKey(device.address)
-                val recentlyAttempted = System.currentTimeMillis() - (lastConnectAttempt[device.address] ?: 0L) < 3000L
+                val recentlyAttempted = System.currentTimeMillis() - (lastConnectAttempt[device.address] ?: 0L) < 1200L
 
-                if (!isAlreadyCentral && !isAlreadyConnected && !isAlreadyConnecting && !recentlyAttempted) {
+                if (!isAlreadyConnected && !isAlreadyConnecting && !recentlyAttempted) {
+                    Log.d(TAG, "Auto-connecting to discovered node: ${device.address} ($devName, $nodeId)")
                     connect(device.address)
                 }
             }
@@ -141,6 +180,16 @@ class BleScanner(
             Log.e(TAG, "BLE Scan failed with errorCode: $errorCode")
             isScanning = false
             onScanStateChanged(false)
+
+            // Auto-recovery watchdog: automatically restart scanner
+            if (shouldBeScanning && getActiveAdapter()?.isEnabled == true) {
+                mainHandler.postDelayed({
+                    if (shouldBeScanning && !isScanning) {
+                        Log.d(TAG, "Auto-recovering BLE scanner after failure...")
+                        startScan(autoConnectEnabled, true)
+                    }
+                }, 1500)
+            }
         }
     }
 
@@ -150,10 +199,50 @@ class BleScanner(
             val address = gatt.device.address
             Log.d(TAG, "GATT Client connection changed: $address, status=$status, newState=$newState")
 
+            // Cancel connection watchdog and any prior discovery watchdog
+            connectionWatchdogs.remove(address)?.let { mainHandler.removeCallbacks(it) }
+            discoveryWatchdogs.remove(address)?.let { mainHandler.removeCallbacks(it) }
+
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 pendingGatts[address] = gatt
 
-                // Slight delay of 150ms before requesting MTU 512 to ensure GATT baseband link is stable
+                // Discovery watchdog: ensure hung MTU / service discovery never wedges pendingGatts permanently
+                val discWatchdog = Runnable {
+                    if (pendingGatts.containsKey(address) && !readyGatts.containsKey(address)) {
+                        Log.w(TAG, "Discovery watchdog: handshake timed out for $address, closing GATT...")
+                        val hungGatt = pendingGatts.remove(address)
+                        try {
+                            hungGatt?.disconnect()
+                            hungGatt?.close()
+                        } catch (e: Exception) {}
+                        onNodeDisconnected(address)
+                    }
+                }
+                discoveryWatchdogs[address] = discWatchdog
+                mainHandler.postDelayed(discWatchdog, 6000)
+
+                // 1. Immediately request 2M High-Speed PHY (BLE 5.0) if supported (doubles throughput to 2 Mbps)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try {
+                        gatt.setPreferredPhy(
+                            BluetoothDevice.PHY_LE_2M_MASK,
+                            BluetoothDevice.PHY_LE_2M_MASK,
+                            BluetoothDevice.PHY_OPTION_NO_PREFERRED
+                        )
+                        Log.d(TAG, "Client requested 2M High-Speed PHY for $address")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "setPreferredPhy notice: ${e.message}")
+                    }
+                }
+
+                // 2. Immediately request high connection priority for minimal packet latency (11.25-15ms interval)
+                try {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not request CONNECTION_PRIORITY_HIGH: ${e.message}")
+                }
+
+                // 3. Fast MTU 512 request after 40ms to maximize payload capacity (99% packets fit in 1 frame)
                 mainHandler.postDelayed({
                     if (pendingGatts.containsKey(address) && !readyGatts.containsKey(address)) {
                         val requested = gatt.requestMtu(512)
@@ -162,15 +251,15 @@ class BleScanner(
                             gatt.discoverServices()
                         }
                     }
-                }, 150)
+                }, 40)
 
-                // Fallback: If neither onMtuChanged nor onServicesDiscovered fires within 1500ms, force discoverServices
+                // Fallback: If neither onMtuChanged nor onServicesDiscovered fires within 1200ms, force discoverServices
                 mainHandler.postDelayed({
                     if (pendingGatts.containsKey(address) && !readyGatts.containsKey(address) && gatt.services.isEmpty()) {
                         Log.d(TAG, "MTU callback timed out, fallback to discoverServices for $address")
                         gatt.discoverServices()
                     }
-                }, 1500)
+                }, 1200)
 
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
                 pendingGatts.remove(address)
@@ -193,7 +282,27 @@ class BleScanner(
                     Log.e(TAG, "Error closing gatt: ${e.message}")
                 }
                 onNodeDisconnected(address)
+
+                // Fast auto-reconnect to recently active peer in 500ms if auto-connect is on
+                if (autoConnectEnabled && shouldBeScanning) {
+                    val nodeInfo = discoveredNodes[address]
+                    val seenRecently = nodeInfo != null && (System.currentTimeMillis() - nodeInfo.lastSeen < 60000L)
+                    if (seenRecently) {
+                        Log.d(TAG, "Node $address disconnected, scheduling fast auto-reconnect in 500ms...")
+                        mainHandler.postDelayed({
+                            if (shouldBeScanning && autoConnectEnabled && !readyGatts.containsKey(address) && !pendingGatts.containsKey(address)) {
+                                connect(address)
+                            }
+                        }, 500)
+                    }
+                }
             }
+        }
+
+        override fun onPhyUpdate(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
+            val address = gatt.device.address
+            val is2M = txPhy == BluetoothDevice.PHY_LE_2M && rxPhy == BluetoothDevice.PHY_LE_2M
+            Log.d(TAG, "GATT Client onPhyUpdate for $address: txPhy=$txPhy, rxPhy=$rxPhy (2M High-Speed=$is2M), status=$status")
         }
 
         @SuppressLint("MissingPermission")
@@ -201,6 +310,10 @@ class BleScanner(
             val address = gatt.device.address
             Log.d(TAG, "GATT onMtuChanged for $address: mtu=$mtu, status=$status")
             negotiatedMtus[address] = if (status == BluetoothGatt.GATT_SUCCESS) mtu else 23
+            // Re-assert high priority to ensure OS doesn't relax connection interval
+            try {
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            } catch (e: Exception) {}
             // Now that MTU handshake finished, discover services cleanly
             gatt.discoverServices()
         }
@@ -210,6 +323,11 @@ class BleScanner(
             val address = gatt.device.address
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "GATT Services discovered successfully for $address")
+                // Re-assert high priority
+                try {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                } catch (e: Exception) {}
+
                 val service = gatt.getService(ResQNetConstants.SERVICE_UUID)
                 if (service != null) {
                     val txChar = service.getCharacteristic(ResQNetConstants.CHAR_TX_MESSAGE_UUID)
@@ -237,10 +355,24 @@ class BleScanner(
                         markGattReadyAndNotify(gatt)
                     }
                 } else {
-                    Log.e(TAG, "ResQNet service UUID not found on $address")
+                    Log.e(TAG, "ResQNet service UUID not found on $address, closing GATT cleanly")
+                    discoveryWatchdogs.remove(address)?.let { mainHandler.removeCallbacks(it) }
+                    pendingGatts.remove(address)
+                    try {
+                        gatt.disconnect()
+                        gatt.close()
+                    } catch (e: Exception) {}
+                    onNodeDisconnected(address)
                 }
             } else {
-                Log.e(TAG, "Service discovery failed with status $status on $address")
+                Log.e(TAG, "Service discovery failed with status $status on $address, closing GATT cleanly")
+                discoveryWatchdogs.remove(address)?.let { mainHandler.removeCallbacks(it) }
+                pendingGatts.remove(address)
+                try {
+                    gatt.disconnect()
+                    gatt.close()
+                } catch (e: Exception) {}
+                onNodeDisconnected(address)
             }
         }
 
@@ -251,6 +383,10 @@ class BleScanner(
         ) {
             val address = gatt.device.address
             Log.d(TAG, "GATT onDescriptorWrite for $address, status=$status, desc=${descriptor.uuid}")
+            // Re-assert high priority to keep link locked at 11.25ms interval
+            try {
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            } catch (e: Exception) {}
             markGattReadyAndNotify(gatt)
         }
 
@@ -308,6 +444,7 @@ class BleScanner(
 
     private fun markGattReadyAndNotify(gatt: BluetoothGatt) {
         val address = gatt.device.address
+        discoveryWatchdogs.remove(address)?.let { mainHandler.removeCallbacks(it) }
         if (readyGatts.containsKey(address)) {
             return
         }
@@ -317,6 +454,12 @@ class BleScanner(
         val nodeInfo = discoveredNodes[address]
         val nodeId = nodeInfo?.nodeId ?: "ERVO-${address.takeLast(4).replace(":", "").uppercase()}"
         val name = nodeInfo?.name ?: nodeId
+
+        val myLocalId = localDeviceIdLookup?.invoke()
+        if (!myLocalId.isNullOrEmpty() && nodeId.equals(myLocalId, ignoreCase = true)) {
+            return
+        }
+
         Log.i(TAG, "Node fully ready for bidirectional transmission: $address ($name, $nodeId)")
         onNodeConnected(address, nodeId, name)
 
@@ -344,6 +487,15 @@ class BleScanner(
         }
 
         autoConnectEnabled = autoConnect
+        shouldBeScanning = true
+
+        if (isScanning) {
+            Log.d(TAG, "BLE Scan already active, preserving continuous session")
+            startWatchdog()
+            return true
+        }
+
+        startWatchdog()
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -368,6 +520,7 @@ class BleScanner(
             }
             scanner.startScan(filters, settings, scanCallback)
             isScanning = true
+            lastScanStartMs = System.currentTimeMillis()
             onScanStateChanged(true)
             Log.d(TAG, "BLE Scan started (hardware filtered for ResQNet)")
 
@@ -381,11 +534,39 @@ class BleScanner(
         }
     }
 
+    private fun startWatchdog() {
+        scanWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+        scanWatchdogRunnable = object : Runnable {
+            override fun run() {
+                if (shouldBeScanning) {
+                    val adapter = getActiveAdapter()
+                    if (adapter != null && adapter.isEnabled && !isScanning) {
+                        Log.d(TAG, "Scan watchdog: scanner was inactive, auto-restarting...")
+                        startScan(autoConnectEnabled, true)
+                    }
+                    mainHandler.postDelayed(this, 4000)
+                }
+            }
+        }
+        mainHandler.postDelayed(scanWatchdogRunnable!!, 4000)
+    }
+
     private fun schedulePeriodicCycle() {
         periodicScanRunnable?.let { mainHandler.removeCallbacks(it) }
         periodicScanRunnable = Runnable {
-            if (isScanning) {
-                schedulePeriodicCycle()
+            if (shouldBeScanning && isScanning) {
+                // Periodically cycle scan (stop, pause 100ms, restart) to defeat Android BLE continuous scan throttling
+                try {
+                    getActiveAdapter()?.bluetoothLeScanner?.stopScan(scanCallback)
+                    isScanning = false
+                    mainHandler.postDelayed({
+                        if (shouldBeScanning) {
+                            startScan(autoConnectEnabled, true)
+                        }
+                    }, 100)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Scan cycle refresh notice: ${e.message}")
+                }
             }
         }
         mainHandler.postDelayed(periodicScanRunnable!!, scanIntervalMs)
@@ -393,6 +574,8 @@ class BleScanner(
 
     @SuppressLint("MissingPermission")
     fun stopScan() {
+        shouldBeScanning = false
+        scanWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
         periodicScanRunnable?.let { mainHandler.removeCallbacks(it) }
         try {
             getActiveAdapter()?.bluetoothLeScanner?.stopScan(scanCallback)
@@ -416,6 +599,15 @@ class BleScanner(
 
         lastConnectAttempt[deviceAddress] = System.currentTimeMillis()
 
+        // Only briefly pause scanner if enough cooldown has elapsed so we NEVER trip Android's 5-scans/30s OS throttle
+        val shouldPauseScan = isScanning && (System.currentTimeMillis() - lastScanStartMs) > 6500L
+        if (shouldPauseScan) {
+            try {
+                adapter.bluetoothLeScanner?.stopScan(scanCallback)
+                isScanning = false
+            } catch (e: Exception) {}
+        }
+
         try {
             val gatt = device.connectGatt(
                 context,
@@ -425,17 +617,51 @@ class BleScanner(
             )
             pendingGatts[deviceAddress] = gatt
             Log.d(TAG, "Initiated connectGatt to $deviceAddress")
+
+            // Resume scanning fast after 150ms if we paused it
+            if (shouldPauseScan && shouldBeScanning) {
+                mainHandler.postDelayed({
+                    if (shouldBeScanning && !isScanning) {
+                        startScan(autoConnectEnabled, true)
+                    }
+                }, 150)
+            }
+
+            // Connection watchdog (4000ms): close gatt if hanging
+            val watchdog = Runnable {
+                if (pendingGatts.containsKey(deviceAddress) && !readyGatts.containsKey(deviceAddress)) {
+                    Log.w(TAG, "Connection watchdog: connectGatt to $deviceAddress timed out, closing...")
+                    val hangingGatt = pendingGatts.remove(deviceAddress)
+                    try {
+                        hangingGatt?.disconnect()
+                        hangingGatt?.close()
+                    } catch (e: Exception) {}
+                    lastConnectAttempt.remove(deviceAddress)
+                }
+            }
+            connectionWatchdogs[deviceAddress] = watchdog
+            mainHandler.postDelayed(watchdog, 4000)
+
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Exception connecting to $deviceAddress: ${e.message}")
+            if (shouldPauseScan && shouldBeScanning) {
+                mainHandler.postDelayed({
+                    if (shouldBeScanning && !isScanning) {
+                        startScan(autoConnectEnabled, true)
+                    }
+                }, 150)
+            }
             return false
         }
     }
 
     @SuppressLint("MissingPermission")
     fun disconnect(deviceAddress: String) {
-        pendingGatts.remove(deviceAddress)
-        val gatt = readyGatts.remove(deviceAddress)
+        connectionWatchdogs.remove(deviceAddress)?.let { mainHandler.removeCallbacks(it) }
+        discoveryWatchdogs.remove(deviceAddress)?.let { mainHandler.removeCallbacks(it) }
+        val pendingGatt = pendingGatts.remove(deviceAddress)
+        val gatt = readyGatts.remove(deviceAddress) ?: pendingGatt
         negotiatedMtus.remove(deviceAddress)
 
         writeWatchdogs.remove(deviceAddress)?.let { mainHandler.removeCallbacks(it) }
@@ -509,19 +735,46 @@ class BleScanner(
         mainHandler.postDelayed(watchdog, 4000)
 
         val bytes = nextWrite.packetJson.toByteArray(StandardCharsets.UTF_8)
-        val initiated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val res = gatt.writeCharacteristic(rxChar, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-            res == BluetoothStatusCodes.SUCCESS
-        } else {
-            rxChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            rxChar.value = bytes
-            gatt.writeCharacteristic(rxChar)
+        var initiated = false
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val res = gatt.writeCharacteristic(rxChar, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+                initiated = (res == BluetoothStatusCodes.SUCCESS)
+            } else {
+                rxChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                rxChar.value = bytes
+                initiated = gatt.writeCharacteristic(rxChar)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "writeCharacteristic threw exception: ${e.message}")
+            initiated = false
         }
 
         if (!initiated) {
             mainHandler.removeCallbacks(watchdog)
             writeWatchdogs.remove(targetAddress)
             inFlightWrites.remove(targetAddress)
+
+            if (nextWrite.retryCount < 4) {
+                nextWrite.retryCount++
+                Log.d(TAG, "GATT busy on $targetAddress, retrying write #${nextWrite.retryCount} in 75ms...")
+                mainHandler.postDelayed({
+                    val q = writeQueues.getOrPut(targetAddress) { ConcurrentLinkedQueue() }
+                    val list = mutableListOf<QueuedWrite>()
+                    list.add(nextWrite)
+                    while (!q.isEmpty()) {
+                        q.poll()?.let { list.add(it) }
+                    }
+                    for (item in list) {
+                        q.add(item)
+                    }
+                    processNextWrite(targetAddress)
+                }, 75)
+                return
+            }
+
+            Log.w(TAG, "writeCharacteristic failed to initiate after retries on $targetAddress")
             nextWrite.callback(false, "writeCharacteristic failed to initiate")
             processNextWrite(targetAddress)
         }
@@ -559,4 +812,36 @@ class BleScanner(
     fun getConnectedNodes(): List<String> = readyGatts.keys.toList()
     fun getDiscoveredNodes(): List<DiscoveredNodeInfo> = discoveredNodes.values.toList()
     fun getDiscoveredNodeName(address: String): String? = discoveredNodes[address]?.name
+    fun getAddressForNodeId(nodeId: String): String? {
+        val clean = nodeId.trim()
+        if (readyGatts.containsKey(clean)) return clean
+        if (discoveredNodes.containsKey(clean)) return clean
+
+        val match = discoveredNodes.entries.find {
+            it.value.nodeId.equals(clean, ignoreCase = true) ||
+            it.value.name.equals(clean, ignoreCase = true)
+        }?.key
+        if (match != null) return match
+
+        // Suffix / stripped match (e.g. "4A1B" for "ERVO-4A1B")
+        val stripped = clean.replace("ERVO-", "").replace("RESQ-", "")
+        if (stripped.isNotBlank()) {
+            val suffixMatch = discoveredNodes.entries.find {
+                it.value.nodeId.contains(stripped, ignoreCase = true) ||
+                it.key.replace(":", "").endsWith(stripped, ignoreCase = true)
+            }?.key
+            if (suffixMatch != null) return suffixMatch
+        }
+
+        // Only fall back to single ready GATT peer if its nodeId isn't already known to be a DIFFERENT node
+        if (clean != "BROADCAST" && clean != "#all" && !clean.startsWith("#") && readyGatts.size == 1) {
+            val singleAddr = readyGatts.keys.first()
+            val knownNode = discoveredNodes[singleAddr]
+            if (knownNode == null || knownNode.nodeId.equals(clean, ignoreCase = true) || knownNode.name.equals(clean, ignoreCase = true)) {
+                return singleAddr
+            }
+        }
+
+        return null
+    }
 }

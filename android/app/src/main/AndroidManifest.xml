@@ -29,6 +29,7 @@
       android:roundIcon="@mipmap/ic_launcher_round"
       android:allowBackup="false"
       android:theme="@style/AppTheme"
+      android:networkSecurityConfig="@xml/network_security_config"
       android:usesCleartextTraffic="${usesCleartextTraffic}"
       android:supportsRtl="true">
       
@@ -37,6 +38,17 @@
         android:name=".ble.ResQNetForegroundService"
         android:foregroundServiceType="connectedDevice"
         android:exported="false" />
+
+      <!-- FileProvider for Sharing Offline Map Databases & Data Packages -->
+      <provider
+        android:name="androidx.core.content.FileProvider"
+        android:authorities="${applicationId}.fileprovider"
+        android:exported="false"
+        android:grantUriPermissions="true">
+        <meta-data
+            android:name="android.support.FILE_PROVIDER_PATHS"
+            android:resource="@xml/file_paths" />
+      </provider>
 
       <activity
         android:name=".MainActivity"

@@ -23,6 +23,18 @@ export interface PeerNode {
   packetsReceived: number;
   packetsSent: number;
   isRelayCapable?: boolean;
+  lastKnownLocation?: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+    timestamp?: number;
+  };
+  hasActiveSos?: boolean;
+  // Multi-Hop Routing Properties
+  isMultiHop?: boolean;
+  hopCount?: number;
+  viaNodeId?: string; // The 1-hop neighbor node ID used to relay to this node
+  relayPath?: string[]; // Full Dijkstra path (e.g. ['ERVO-A', 'ERVO-B', 'ERVO-C', 'ERVO-D', 'ERVO-E', 'ERVO-F'])
 }
 
 export interface RadioState {

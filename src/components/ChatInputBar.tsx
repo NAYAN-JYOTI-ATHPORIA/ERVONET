@@ -12,7 +12,7 @@ import {
 interface ChatInputBarProps {
   selectedTargetId: string;
   selectedTargetName?: string;
-  onResetTargetToBroadcast: () => void;
+  onResetTargetToBroadcast?: () => void;
   onSendMessage: (text: string) => Promise<boolean>;
 }
 
@@ -42,6 +42,8 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
       if (ok) {
         setText('');
       }
+    } catch (err) {
+      console.warn('Send error:', err);
     } finally {
       setIsSending(false);
     }
@@ -62,12 +64,14 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
               <Text style={styles.recipientText} numberOfLines={1}>
                 {targetLabel}
               </Text>
-              <TouchableOpacity
-                onPress={onResetTargetToBroadcast}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={styles.clearTargetBtn}>✕</Text>
-              </TouchableOpacity>
+              {onResetTargetToBroadcast && (
+                <TouchableOpacity
+                  onPress={onResetTargetToBroadcast}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={styles.clearTargetBtn}>✕</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         )}

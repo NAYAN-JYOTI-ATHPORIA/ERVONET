@@ -94,7 +94,7 @@ export const CompulsoryUsernameModal: React.FC<CompulsoryUsernameModalProps> = (
           {/* Mandatory Requirement Banner */}
           <View style={styles.mandatoryNotice}>
             <View style={styles.noticeHeaderRow}>
-              <Text style={styles.noticeIcon}>⚠️</Text>
+              <Text style={styles.noticeIcon}>[! NOTICE]</Text>
               <Text style={styles.noticeTitle}>NAME REGISTRATION COMPULSORY</Text>
             </View>
             <Text style={styles.noticeBody}>
@@ -159,7 +159,7 @@ export const CompulsoryUsernameModal: React.FC<CompulsoryUsernameModalProps> = (
           {/* Offline Security Guarantee */}
           <View style={styles.securityBox}>
             <Text style={styles.securityText}>
-              🔒 100% Offline: Stored directly on this device. No cell towers, Wi-Fi, or cloud accounts needed.
+              100% Offline: Stored directly on this device. No cell towers, Wi-Fi, or cloud accounts needed.
             </Text>
           </View>
         </ScrollView>

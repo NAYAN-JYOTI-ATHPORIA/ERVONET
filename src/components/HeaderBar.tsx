@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   TextInput,
   Modal,
-  Alert,
 } from 'react-native';
 import { LocalNodeConfig } from '../services/storageService';
 import { RadioState } from '../types/ble';
@@ -17,7 +16,6 @@ interface HeaderBarProps {
   onUpdateName: (name: string) => void;
   onOpenSettings: () => void;
   onEnableBluetooth?: () => void;
-  onSendSos?: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -26,26 +24,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onUpdateName,
   onOpenSettings,
   onEnableBluetooth,
-  onSendSos,
 }) => {
   const [nameModalVisible, setNameModalVisible] = useState(false);
   const [tempName, setTempName] = useState(localConfig.displayName || localConfig.name);
-
-  const handleSosPress = () => {
-    if (!onSendSos) return;
-    Alert.alert(
-      'Broadcast Emergency SOS?',
-      'This broadcasts an immediate critical distress beacon to ALL nearby phones within Bluetooth reach.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Send SOS Now',
-          style: 'destructive',
-          onPress: onSendSos,
-        },
-      ]
-    );
-  };
 
   const handleSaveName = () => {
     if (tempName.trim()) {
@@ -59,13 +40,13 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* Top Brand & Status */}
+      {/* Top Brand & Actions Row */}
       <View style={styles.topRow}>
         <View style={styles.leftBrand}>
           <View style={styles.brandMark}>
             <Text style={styles.brandMarkText}>E</Text>
           </View>
-          <View>
+          <View style={styles.titleCol}>
             <View style={styles.titleRow}>
               <Text style={styles.appTitle}>ERVONET</Text>
               <View style={styles.meshBadge}>
@@ -73,53 +54,11 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                 <Text style={styles.meshBadgeText}>OFFLINE</Text>
               </View>
             </View>
-            <Text style={styles.appSubtitle} numberOfLines={1}>
-              Emergency Relay Via Offline Nodes
-            </Text>
-            <TouchableOpacity
-              style={styles.statusIndicator}
-              onPress={isBluetoothOff && onEnableBluetooth ? onEnableBluetooth : undefined}
-              disabled={!isBluetoothOff}
-              activeOpacity={0.7}
-            >
-              <View
-                style={[
-                  styles.statusDot,
-                  isBluetoothOff
-                    ? styles.dotRed
-                    : isConnected
-                    ? styles.dotGreen
-                    : styles.dotAmber,
-                ]}
-              />
-              <Text
-                style={[
-                  styles.statusText,
-                  isBluetoothOff && styles.statusTextAlert,
-                ]}
-              >
-                {isBluetoothOff
-                  ? 'Bluetooth is OFF • Tap to Enable'
-                  : isConnected
-                  ? `Active • ${radioState.connectedCount} peer(s) connected`
-                  : 'Listening for nearby nodes...'}
-              </Text>
-            </TouchableOpacity>
           </View>
         </View>
 
         {/* Right Action Buttons */}
         <View style={styles.rightActions}>
-          {onSendSos && (
-            <TouchableOpacity
-              style={styles.sosHeaderBtn}
-              onPress={handleSosPress}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.sosHeaderText}>SOS</Text>
-            </TouchableOpacity>
-          )}
-
           {/* User Name Chip */}
           <TouchableOpacity
             style={styles.userChip}
@@ -134,14 +73,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                 {((localConfig.displayName || localConfig.name)[0] || 'U').toUpperCase()}
               </Text>
             </View>
-            <View style={styles.userMetaCol}>
-              <Text style={styles.userName} numberOfLines={1}>
-                {localConfig.displayName || localConfig.name}
-              </Text>
-              <Text style={styles.userFixedId} numberOfLines={1}>
-                {localConfig.deviceId || localConfig.nodeId}
-              </Text>
-            </View>
+            <Text style={styles.userName} numberOfLines={1}>
+              {localConfig.displayName || localConfig.name}
+            </Text>
           </TouchableOpacity>
 
           {/* Settings / Controls Button */}
@@ -152,11 +86,59 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           >
             <View style={styles.menuIconBars}>
               <View style={styles.menuBar} />
-              <View style={[styles.menuBar, { width: 9 }]} />
+              <View style={[styles.menuBar, { width: 10 }]} />
               <View style={styles.menuBar} />
             </View>
           </TouchableOpacity>
         </View>
+      </View>
+
+      {/* Sub-Header Status & Node ID Ribbon */}
+      <View style={styles.statusSubRow}>
+        <TouchableOpacity
+          style={styles.statusIndicator}
+          onPress={isBluetoothOff && onEnableBluetooth ? onEnableBluetooth : undefined}
+          disabled={!isBluetoothOff}
+          activeOpacity={0.7}
+        >
+          <View
+            style={[
+              styles.statusDot,
+              isBluetoothOff
+                ? styles.dotRed
+                : isConnected
+                ? styles.dotGreen
+                : styles.dotAmber,
+            ]}
+          />
+          <Text
+            style={[
+              styles.statusText,
+              isBluetoothOff && styles.statusTextAlert,
+            ]}
+            numberOfLines={1}
+          >
+            {isBluetoothOff
+              ? 'Bluetooth is OFF • Tap to Enable'
+              : isConnected
+              ? `Active Mesh • ${radioState.connectedCount} peer(s)`
+              : 'Listening for nearby nodes...'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.nodeIdBadge}
+          onPress={() => {
+            setTempName(localConfig.displayName || localConfig.name);
+            setNameModalVisible(true);
+          }}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.nodeIdLabel}>ID:</Text>
+          <Text style={styles.nodeIdValue} numberOfLines={1}>
+            {localConfig.deviceId || localConfig.nodeId}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Edit Name Modal */}
@@ -211,9 +193,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 const styles = StyleSheet.create({
   container: {
     backgroundColor: '#090D1A',
-    paddingHorizontal: 12,
-    paddingTop: 6,
-    paddingBottom: 6,
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 7,
     borderBottomWidth: 1,
     borderBottomColor: '#162032',
   },
@@ -230,7 +212,7 @@ const styles = StyleSheet.create({
   brandMark: {
     width: 32,
     height: 32,
-    borderRadius: 7,
+    borderRadius: 8,
     backgroundColor: '#0C2A44',
     borderWidth: 1.5,
     borderColor: '#0284C7',
@@ -238,113 +220,64 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   brandMarkText: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '900',
     color: '#38BDF8',
     letterSpacing: -0.5,
   },
+  titleCol: {
+    justifyContent: 'center',
+  },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 7,
   },
   appTitle: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '900',
     color: '#F8FAFC',
-    letterSpacing: 0.6,
+    letterSpacing: 0.8,
   },
   meshBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#0F2B48',
-    paddingHorizontal: 5,
-    paddingVertical: 1.5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: 4,
     borderWidth: 0.8,
     borderColor: '#0369A1',
-    gap: 3.5,
+    gap: 4,
   },
   meshBadgeDot: {
-    width: 4.5,
-    height: 4.5,
+    width: 5,
+    height: 5,
     borderRadius: 2.5,
     backgroundColor: '#10B981',
   },
   meshBadgeText: {
-    fontSize: 7.5,
+    fontSize: 8,
     fontWeight: '900',
     color: '#38BDF8',
-    letterSpacing: 0.6,
-  },
-  appSubtitle: {
-    fontSize: 8.5,
-    fontWeight: '600',
-    color: '#64748B',
-    marginTop: 0.5,
-    maxWidth: 165,
-  },
-  statusIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 1,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  dotGreen: {
-    backgroundColor: '#10B981',
-  },
-  dotAmber: {
-    backgroundColor: '#F59E0B',
-  },
-  dotRed: {
-    backgroundColor: '#EF4444',
-  },
-  statusText: {
-    fontSize: 10,
-    color: '#94A3B8',
-    fontWeight: '500',
-  },
-  statusTextAlert: {
-    color: '#F87171',
-    fontWeight: '700',
+    letterSpacing: 0.8,
   },
   rightActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-  },
-  sosHeaderBtn: {
-    backgroundColor: '#DC2626',
-    paddingHorizontal: 8,
-    paddingVertical: 4.5,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#EF4444',
-  },
-  sosHeaderText: {
-    fontSize: 10.5,
-    fontWeight: '900',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
+    gap: 7,
   },
   userChip: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#111827',
-    paddingHorizontal: 7,
-    paddingVertical: 3.5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#1F2937',
+    borderColor: '#1E293B',
     gap: 6,
-    maxWidth: 145,
+    maxWidth: 120,
   },
   userInitialCircle: {
     width: 20,
@@ -361,30 +294,20 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: '#38BDF8',
   },
-  userMetaCol: {
-    justifyContent: 'center',
-    maxWidth: 95,
-  },
   userName: {
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '700',
     color: '#F8FAFC',
   },
-  userFixedId: {
-    fontSize: 7.5,
-    fontWeight: '800',
-    color: '#38BDF8',
-    letterSpacing: 0.3,
-  },
   settingsBtn: {
     backgroundColor: '#111827',
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#1F2937',
+    borderColor: '#1E293B',
   },
   menuIconBars: {
     gap: 2.5,
@@ -396,6 +319,67 @@ const styles = StyleSheet.create({
     height: 1.5,
     backgroundColor: '#94A3B8',
     borderRadius: 1,
+  },
+  statusSubRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 7,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#121A2B',
+  },
+  statusIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    flex: 1,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  dotGreen: {
+    backgroundColor: '#10B981',
+  },
+  dotAmber: {
+    backgroundColor: '#F59E0B',
+  },
+  dotRed: {
+    backgroundColor: '#EF4444',
+  },
+  statusText: {
+    fontSize: 10.5,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  statusTextAlert: {
+    color: '#F87171',
+    fontWeight: '700',
+  },
+  nodeIdBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0D1728',
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: 5,
+    borderWidth: 0.8,
+    borderColor: '#1E293B',
+    gap: 3.5,
+  },
+  nodeIdLabel: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    color: '#64748B',
+    letterSpacing: 0.5,
+  },
+  nodeIdValue: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    color: '#38BDF8',
+    letterSpacing: 0.5,
   },
   modalBackdrop: {
     flex: 1,

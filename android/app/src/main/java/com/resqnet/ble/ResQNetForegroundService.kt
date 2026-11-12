@@ -34,22 +34,30 @@ class ResQNetForegroundService : Service() {
         const val EXTRA_STATUS_TEXT = "extra_status_text"
 
         fun startService(context: Context, statusText: String = "ERVONET BLE Mesh Active") {
-            val intent = Intent(context, ResQNetForegroundService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_STATUS_TEXT, statusText)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                val intent = Intent(context, ResQNetForegroundService::class.java).apply {
+                    action = ACTION_START
+                    putExtra(EXTRA_STATUS_TEXT, statusText)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to start foreground service cleanly", e)
             }
         }
 
         fun stopService(context: Context) {
-            val intent = Intent(context, ResQNetForegroundService::class.java).apply {
-                action = ACTION_STOP
+            try {
+                val intent = Intent(context, ResQNetForegroundService::class.java).apply {
+                    action = ACTION_STOP
+                }
+                context.stopService(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to stop foreground service cleanly", e)
             }
-            context.stopService(intent)
         }
     }
 

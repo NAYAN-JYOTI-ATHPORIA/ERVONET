@@ -31,5 +31,7 @@ object ResQNetConstants {
     const val EVENT_SCAN_STATUS_CHANGED = "onScanStatusChanged"
     const val EVENT_ADV_STATUS_CHANGED = "onAdvertisingStatusChanged"
     const val EVENT_RADIO_STATE_CHANGED = "onRadioStateChanged"
+    const val EVENT_LOCATION_UPDATED = "onLocationUpdated"
+    const val EVENT_BLUETOOTH_STATE_CHANGED = "onBluetoothStateChanged"
 }
 

@@ -13,7 +13,7 @@ export interface PacketChunk {
 }
 
 const CHUNK_PREFIX = 'RESQ_CHUNK:';
-const DEFAULT_CHUNK_SIZE = 80; // Safe default for BLE MTU without buffer overflow
+const DEFAULT_CHUNK_SIZE = 350; // Optimized for negotiated MTU 512, fits single-frame chat packets seamlessly
 
 /**
  * Splits a serialized packet JSON into chunk frames if it exceeds maxChunkSize.

@@ -2,6 +2,7 @@ import { ResQNetPacket } from '../types/message';
 import { PeerNode } from '../types/ble';
 import { bleBridge } from './nativeBleBridge';
 import { storageService } from './storageService';
+import { routingService } from './routingService';
 
 export interface OutboxItem {
   id: string; // Message ID
@@ -33,6 +34,7 @@ class OutboxService {
         this.onFlushRequested();
       }
     }, 5000);
+    this.autoFlushTimer?.unref?.();
   }
 
   /**
@@ -116,7 +118,8 @@ class OutboxService {
             this.queue.delete(item.id);
             flushedCount++;
             storageService.updateMessageStatus(item.id, 'DELIVERED', 50);
-          } catch (e) {
+          } catch (err) {
+            console.warn('Outbox broadcast flush retry notice:', err);
             item.retryCount++;
             if (item.retryCount >= item.maxRetries) {
               this.queue.delete(item.id);
@@ -125,13 +128,33 @@ class OutboxService {
             }
           }
         } else {
-          // Direct or multi-hop: check if destination is directly connected or route via available peer
+          // Direct or multi-hop: check if destination is directly connected or route via Dijkstra
           let target = connectedPeers.find(
             (p) =>
               p.id === item.packet.destinationId ||
               p.nodeId === item.packet.destinationId ||
               p.id === item.targetAddress
           );
+
+          // 2. Check Dijkstra calculated route for multi-hop destination
+          if (!target) {
+            const myId = localNodeId.trim().toUpperCase();
+            const destId = item.packet.destinationId.trim().toUpperCase();
+            const route = routingService.findShortestPath(myId, destId);
+            if (route && route.path.length >= 2) {
+              const nextHopId = route.nextHop;
+              target = connectedPeers.find(
+                (p) =>
+                  (p.nodeId && p.nodeId.trim().toUpperCase() === nextHopId) ||
+                  (p.id && p.id.trim().toUpperCase() === nextHopId)
+              );
+              if (target) {
+                item.packet.route = route.path;
+                item.packet.routeIndex = 0;
+                item.packet.routingAlgo = 'DIJKSTRA';
+              }
+            }
+          }
 
           if (!target && connectedPeers.length > 0) {
             // Forward through first available connected mesh router
@@ -149,7 +172,8 @@ class OutboxService {
               this.queue.delete(item.id);
               flushedCount++;
               storageService.updateMessageStatus(item.id, 'DELIVERED', 65);
-            } catch (e) {
+            } catch (err) {
+              console.warn('Outbox unicast flush retry notice:', err);
               item.retryCount++;
               if (item.retryCount >= item.maxRetries) {
                 this.queue.delete(item.id);

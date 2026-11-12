@@ -4,14 +4,11 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Dimensions,
 } from 'react-native';
 import { PeerNode } from '../types/ble';
-import { estimateDistanceMeters, getSignalQuality } from '../utils/distance';
+import { estimateDistanceMeters } from '../utils/distance';
 
 interface OfflineMeshMapProps {
-  localNodeId: string;
-  localName: string;
   peers: PeerNode[];
   onOpenChat: (targetId: string) => void;
   onConnectPeer?: (address: string) => void;
@@ -30,8 +27,6 @@ function deriveAngleFromId(id: string): number {
 }
 
 export const OfflineMeshMap: React.FC<OfflineMeshMapProps> = ({
-  localNodeId,
-  localName,
   peers,
   onOpenChat,
   onConnectPeer,
@@ -40,8 +35,9 @@ export const OfflineMeshMap: React.FC<OfflineMeshMapProps> = ({
   const [maxRange, setMaxRange] = useState<number>(30); // 15m, 30m, 50m
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
 
-  const displayPeers = peers.filter(
-    (p) => p.connectionState === 'CONNECTED' || p.connectionState === 'DISCOVERED'
+  const displayPeers = React.useMemo(
+    () => peers.filter((p) => p.connectionState === 'CONNECTED' || p.connectionState === 'DISCOVERED'),
+    [peers]
   );
 
   const selectedPeer = displayPeers.find(
@@ -284,8 +280,8 @@ export const OfflineMeshMap: React.FC<OfflineMeshMapProps> = ({
         <View style={styles.emptyMapHint}>
           <Text style={styles.emptyMapHintText}>
             {displayPeers.length > 0
-              ? `📍 ${displayPeers.length} node(s) plotted on radar. Tap any node pin to view distance & start chat.`
-              : '📡 Radar scanning for nearby ERVONET phones over Bluetooth...'}
+              ? `${displayPeers.length} node(s) plotted on radar. Tap any node pin to view distance & start chat.`
+              : 'Radar scanning for nearby ERVONET phones over Bluetooth...'}
           </Text>
         </View>
       )}

@@ -18,10 +18,11 @@ import { ChatScreen } from './ChatScreen';
 import { bleService } from '../services/bleService';
 import { bleBridge } from '../services/nativeBleBridge';
 import { PeerNode, RadioState } from '../types/ble';
-import { MessageRecord } from '../types/message';
+import { MessageRecord, MapSectorPayload } from '../types/message';
 import { NetworkMetrics } from '../types/metrics';
 import { LocalNodeConfig } from '../services/storageService';
 import { EmergencyPreset } from '../protocol/emergencyAlerts';
+import { locationService } from '../services/locationService';
 
 type ActiveTab = 'MESH_MAP' | 'DEVICES';
 type CurrentScreen = 'HUB' | 'CHAT';
@@ -29,6 +30,7 @@ type CurrentScreen = 'HUB' | 'CHAT';
 export const MainScreen: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<CurrentScreen>('HUB');
   const [activeTab, setActiveTab] = useState<ActiveTab>('MESH_MAP');
+  const [focusMapSector, setFocusMapSector] = useState<MapSectorPayload | null>(null);
   const [radioState, setRadioState] = useState<RadioState>(
     bleService.getStateSnapshot().radioState
   );
@@ -58,16 +60,10 @@ export const MainScreen: React.FC = () => {
       setOutboxCount(state.outboxCount);
     });
 
-    // Automatically enable Auto-Scan and Advertising for seamless background discovery
-    const autoStart = async () => {
-      try {
-        await bleService.toggleAutoScan();
-        await bleService.toggleAdvertising();
-      } catch (e) {
-        console.warn('Auto start notice:', e);
-      }
-    };
-    autoStart();
+    // Automatically ensure Advertising, Auto-Scan and Auto-Connect are ALWAYS ON
+    bleService.ensureAlwaysOn().catch((e) => {
+      console.warn('Ensure always on notice:', e);
+    });
 
     return () => {
       unsubscribe();
@@ -121,31 +117,83 @@ export const MainScreen: React.FC = () => {
   };
 
   const handleSendTextMessage = async (text: string): Promise<boolean> => {
-    return await bleService.transmitMessage({
-      targetId: selectedTargetId,
-      payload: text,
-      priority: 'NORMAL',
-    });
+    try {
+      await bleService.transmitMessage({
+        targetId: selectedTargetId,
+        payload: text,
+        priority: 'NORMAL',
+      });
+      return true;
+    } catch (e) {
+      console.warn('Failed to transmit message:', e);
+      return false;
+    }
   };
 
   const handleSendPreset = async (preset: EmergencyPreset) => {
-    await bleService.transmitMessage({
-      targetId: selectedTargetId,
-      payload: preset.payload,
-      priority: preset.priority,
-    });
+    try {
+      let loc;
+      let payload = preset.payload;
+
+      if (preset.priority === 'CRITICAL_SOS' || preset.id === 'sos_help') {
+        loc = await locationService.getCurrentLocation();
+        if (loc) {
+          payload += `\nGPS: ${loc.latitude.toFixed(5)}, ${loc.longitude.toFixed(5)}`;
+        }
+      }
+
+      await bleService.transmitMessage({
+        targetId: selectedTargetId,
+        payload,
+        priority: preset.priority,
+        location: loc
+          ? {
+              latitude: loc.latitude,
+              longitude: loc.longitude,
+              accuracy: loc.accuracy,
+            }
+          : undefined,
+      });
+    } catch (e) {
+      console.warn('Failed to transmit preset:', e);
+    }
   };
 
   const handleSendSos = async () => {
-    await bleService.transmitMessage({
-      targetId: 'BROADCAST', // SOS broadcasts to everyone
-      payload: 'SOS EMERGENCY: I need immediate help at my current location!',
-      priority: 'CRITICAL_SOS',
-    });
-    Alert.alert(
-      'SOS Transmitted',
-      'Your emergency distress alert has been broadcast to all nearby phones over Bluetooth.'
-    );
+    try {
+      // Acquire current GPS location
+      const loc = await locationService.getCurrentLocation();
+
+      let locationText = '';
+      if (loc) {
+        const latStr = loc.latitude.toFixed(5);
+        const lngStr = loc.longitude.toFixed(5);
+        const accStr = loc.accuracy ? ` (±${loc.accuracy}m)` : '';
+        locationText = `\nGPS: ${latStr}, ${lngStr}${accStr}`;
+      }
+
+      await bleService.transmitMessage({
+        targetId: 'BROADCAST', // SOS broadcasts to everyone
+        payload: `[CRITICAL SOS]: Immediate assistance required at current coordinates!${locationText}`,
+        priority: 'CRITICAL_SOS',
+        location: loc
+          ? {
+              latitude: loc.latitude,
+              longitude: loc.longitude,
+              accuracy: loc.accuracy,
+            }
+          : undefined,
+      });
+
+      Alert.alert(
+        'Emergency SOS Broadcasted',
+        loc
+          ? `Distress beacon with live GPS coordinates (${loc.latitude.toFixed(4)}, ${loc.longitude.toFixed(4)}) broadcast to all nearby phones over Bluetooth mesh.`
+          : 'Emergency distress beacon broadcast to all nearby phones over Bluetooth mesh.'
+      );
+    } catch (e) {
+      console.warn('Failed to broadcast SOS:', e);
+    }
   };
 
   const handleClearChat = () => {
@@ -166,6 +214,12 @@ export const MainScreen: React.FC = () => {
     }
   };
 
+  const handleViewMapSector = (sector: MapSectorPayload) => {
+    setFocusMapSector(sector);
+    setCurrentScreen('HUB');
+    setActiveTab('MESH_MAP');
+  };
+
   // Find human name / details of selected target
   const selectedPeer = peers.find(
     (p) =>
@@ -183,7 +237,6 @@ export const MainScreen: React.FC = () => {
         <ChatScreen
           targetId={selectedTargetId}
           peer={selectedPeer}
-          localNodeId={localConfig.nodeId}
           localConfig={localConfig}
           messages={messages}
           radioState={radioState}
@@ -193,8 +246,8 @@ export const MainScreen: React.FC = () => {
           onClearChat={handleClearChat}
           onDeleteMessage={handleDeleteMessage}
           onRetryMessage={handleRetryMessage}
+          onViewMapSector={handleViewMapSector}
           onConnectPeer={handleConnectPeer}
-          onDisconnectPeer={handleDisconnectPeer}
         />
 
         {/* Compulsory Mandatory Username Setup Gate on Install / Launch */}
@@ -219,7 +272,6 @@ export const MainScreen: React.FC = () => {
         onUpdateName={handleUpdateName}
         onOpenSettings={() => setShowSettingsModal(true)}
         onEnableBluetooth={() => bleBridge.enableBluetooth()}
-        onSendSos={handleSendSos}
       />
 
       {/* Clean Segmented Navigation Tab */}
@@ -270,7 +322,11 @@ export const MainScreen: React.FC = () => {
 
       {/* Main Tab Content */}
       {activeTab === 'MESH_MAP' ? (
-        <ScrollView style={styles.hubScroll} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={styles.hubScroll}
+          contentContainerStyle={styles.hubScrollContent}
+          showsVerticalScrollIndicator={false}
+        >
           {/* Cards for Everyone and Connected Users with Distance, Signal Strength & Factors */}
           <NearbyPeopleBar
             peers={peers}
@@ -279,18 +335,19 @@ export const MainScreen: React.FC = () => {
             messages={messages}
           />
 
-          {/* Crisis Channels (#all, #emergency, #medical, #supplies) */}
+          {/* Crisis Channels (#all, SOS, #emergency, #medical, #supplies) */}
           <ChannelBar
             activeTargetId={selectedTargetId}
             onSelectChannel={handleOpenChat}
             outboxCount={outboxCount}
+            onSendSos={handleSendSos}
           />
 
           {/* Real Offline Map with MapLibre, OpenFreeMap & Locally Downloaded Regions */}
           <OfflineMapLibre
-            localNodeId={localConfig.deviceId || localConfig.nodeId}
-            localName={localConfig.displayName || localConfig.name}
             peers={peers}
+            focusedSector={focusMapSector}
+            onClearFocusedSector={() => setFocusMapSector(null)}
             onOpenChat={handleOpenChat}
             onConnectPeer={handleConnectPeer}
           />
@@ -305,8 +362,6 @@ export const MainScreen: React.FC = () => {
           onConnectPeer={handleConnectPeer}
           onDisconnectPeer={handleDisconnectPeer}
           onToggleScan={handleToggleScan}
-          localNodeId={localConfig.deviceId || localConfig.nodeId}
-          localName={localConfig.displayName || localConfig.name}
         />
       )}
 
@@ -341,27 +396,31 @@ const styles = StyleSheet.create({
   tabContainer: {
     flexDirection: 'row',
     backgroundColor: '#090D1A',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderBottomWidth: 1,
     borderBottomColor: '#162032',
-    gap: 6,
+    gap: 8,
   },
   tabButton: {
     flex: 1,
-    paddingVertical: 5,
+    paddingVertical: 7,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 6,
-    backgroundColor: '#111827',
+    borderRadius: 8,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
   },
   tabButtonActive: {
     backgroundColor: '#0284C7',
+    borderColor: '#38BDF8',
   },
   tabText: {
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '700',
     color: '#94A3B8',
+    letterSpacing: 0.2,
   },
   tabTextActive: {
     color: '#FFFFFF',
@@ -370,20 +429,23 @@ const styles = StyleSheet.create({
   tabWithBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
   },
   tabBadge: {
     backgroundColor: '#38BDF8',
-    paddingHorizontal: 5,
-    paddingVertical: 0.5,
-    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 8,
   },
   tabBadgeText: {
     fontSize: 9.5,
-    fontWeight: '800',
-    color: '#0F172A',
+    fontWeight: '900',
+    color: '#0A1220',
   },
   hubScroll: {
     flex: 1,
+  },
+  hubScrollContent: {
+    paddingBottom: 24,
   },
 });

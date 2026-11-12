@@ -1,6 +1,7 @@
 import { MessageRecord } from '../types/message';
-import { PeerNode, NodeRole } from '../types/ble';
+import { NodeRole } from '../types/ble';
 import { NetworkMetrics } from '../types/metrics';
+import { isControlPacket } from '../protocol/packetSchema';
 
 export interface LocalNodeConfig {
   nodeId: string;
@@ -14,7 +15,6 @@ export interface LocalNodeConfig {
 
 class StorageService {
   private messages: MessageRecord[] = [];
-  private peers: Map<string, PeerNode> = new Map();
   private localConfig: LocalNodeConfig;
 
   private metrics: NetworkMetrics = {
@@ -74,27 +74,33 @@ class StorageService {
   }
 
   public getMessages(): MessageRecord[] {
-    return [...this.messages];
+    // Strictly filter out any control, routing, ping, or handshake packets from chat messages
+    return this.messages.filter((m) => !isControlPacket(m.packet));
   }
 
   public addMessage(record: MessageRecord): MessageRecord[] {
+    // Never store network routing or control plane packets as user chat messages
+    if (isControlPacket(record.packet)) {
+      return this.getMessages();
+    }
+
     const existingIndex = this.messages.findIndex((m) => m.id === record.id);
     if (existingIndex >= 0) {
       // If already recorded as OUTGOING, incoming radio reflection/echo should never duplicate it
       if (this.messages[existingIndex].direction === 'OUTGOING' && record.direction === 'INCOMING') {
         this.messages[existingIndex].status = 'DELIVERED';
         this.messages[existingIndex].deliveredAt = Date.now();
-        return [...this.messages];
+        return this.getMessages();
       }
       // Drop duplicate record
-      return [...this.messages];
+      return this.getMessages();
     }
 
     this.messages.push(record);
     if (this.messages.length > 200) {
       this.messages.shift();
     }
-    return [...this.messages];
+    return this.getMessages();
   }
 
   public clearMessages(targetId?: string): MessageRecord[] {
@@ -200,7 +206,6 @@ class StorageService {
    */
   public wipeAllData() {
     this.messages = [];
-    this.peers.clear();
     this.metrics = {
       totalSent: 0,
       totalReceived: 0,
@@ -216,6 +221,16 @@ class StorageService {
       activeLinksCount: 0,
       lastUpdated: Date.now(),
     };
+  }
+
+  private cachedLocation: { latitude: number; longitude: number; accuracy?: number; timestamp?: number } | null = null;
+
+  public saveLastKnownLocation(loc: { latitude: number; longitude: number; accuracy?: number; timestamp?: number }) {
+    this.cachedLocation = { ...loc };
+  }
+
+  public getLastKnownLocation(): { latitude: number; longitude: number; accuracy?: number; timestamp?: number } | null {
+    return this.cachedLocation;
   }
 }
 

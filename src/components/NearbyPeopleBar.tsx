@@ -25,12 +25,15 @@ export const NearbyPeopleBar: React.FC<NearbyPeopleBarProps> = ({
 }) => {
   const isEveryoneSelected =
     selectedTargetId === 'BROADCAST' || selectedTargetId === '#all';
-  const connectedPeers = peers.filter(
-    (p) => p.connectionState === 'CONNECTED'
+
+  // Peers already arrive deduplicated and self-filtered from bleService.getDeduplicatedPeers()
+  const displayPeers = React.useMemo(
+    () => peers.filter((p) => p.connectionState === 'CONNECTED' || p.connectionState === 'DISCOVERED'),
+    [peers]
   );
-  // Show all discovered and connected app nodes
-  const displayPeers = peers.filter(
-    (p) => p.connectionState === 'CONNECTED' || p.connectionState === 'DISCOVERED'
+
+  const connectedPeers = displayPeers.filter(
+    (p) => p.connectionState === 'CONNECTED'
   );
 
   return (
@@ -119,7 +122,13 @@ export const NearbyPeopleBar: React.FC<NearbyPeopleBarProps> = ({
                 <View
                   style={[
                     styles.onlineBadge,
-                    { backgroundColor: isConnected ? '#10B981' : '#38BDF8' },
+                    {
+                      backgroundColor: peer.isMultiHop
+                        ? '#A855F7'
+                        : isConnected
+                        ? '#10B981'
+                        : '#38BDF8',
+                    },
                   ]}
                 />
                 {directMsgCount > 0 && (
@@ -139,8 +148,10 @@ export const NearbyPeopleBar: React.FC<NearbyPeopleBarProps> = ({
               </Text>
 
               {/* Distance Factor */}
-              <Text style={styles.cardDist}>
-                ~{peer.distanceMeters}m • {isConnected ? 'Active' : 'Nearby'}
+              <Text style={styles.cardDist} numberOfLines={1}>
+                {peer.isMultiHop
+                  ? `${peer.hopCount || 2} Hops Relay`
+                  : `~${peer.distanceMeters}m • ${isConnected ? 'Active' : 'Nearby'}`}
               </Text>
 
               {/* Signal Strength & Network Factor */}
@@ -148,11 +159,13 @@ export const NearbyPeopleBar: React.FC<NearbyPeopleBarProps> = ({
                 <Text
                   style={[
                     styles.signalText,
-                    { color: signal.color },
+                    { color: peer.isMultiHop ? '#C084FC' : signal.color },
                   ]}
                   numberOfLines={1}
                 >
-                  {peer.rssi} dBm
+                  {peer.isMultiHop
+                    ? (peer.viaNodeId ? `via ${peer.viaNodeId.replace('ERVO-', '').replace('RESQ-', '')}` : 'Dijkstra')
+                    : `${peer.rssi} dBm`}
                 </Text>
               </View>
             </TouchableOpacity>
@@ -166,7 +179,7 @@ export const NearbyPeopleBar: React.FC<NearbyPeopleBarProps> = ({
 const styles = StyleSheet.create({
   container: {
     backgroundColor: '#090D1A',
-    paddingVertical: 5,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#162032',
   },
@@ -174,33 +187,33 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    marginBottom: 4,
+    paddingHorizontal: 14,
+    marginBottom: 6,
   },
   sectionTitle: {
-    fontSize: 9.5,
+    fontSize: 10,
     fontWeight: '800',
     color: '#64748B',
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
   },
   autoHint: {
-    fontSize: 9.5,
+    fontSize: 10,
     color: '#10B981',
     fontWeight: '700',
   },
   scrollRow: {
-    paddingHorizontal: 10,
-    gap: 7,
+    paddingHorizontal: 12,
+    gap: 8,
   },
   card: {
-    width: 90,
-    backgroundColor: '#111827',
-    borderRadius: 10,
-    paddingVertical: 5,
-    paddingHorizontal: 4,
+    width: 98,
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 5,
     alignItems: 'center',
     borderWidth: 1.2,
-    borderColor: '#1F2937',
+    borderColor: '#1E293B',
   },
   cardSelected: {
     borderColor: '#38BDF8',
@@ -208,12 +221,12 @@ const styles = StyleSheet.create({
   },
   avatarWrap: {
     position: 'relative',
-    marginBottom: 3,
+    marginBottom: 4,
   },
   avatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#1E293B',
     justifyContent: 'center',
     alignItems: 'center',
@@ -225,13 +238,13 @@ const styles = StyleSheet.create({
     borderColor: '#38BDF8',
   },
   broadcastInitial: {
-    fontSize: 9.5,
+    fontSize: 10,
     fontWeight: '900',
     color: '#FFFFFF',
     letterSpacing: 0.5,
   },
   avatarInitials: {
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '800',
     color: '#38BDF8',
   },
@@ -239,39 +252,39 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: -1,
     bottom: -1,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 8.5,
+    height: 8.5,
+    borderRadius: 4.5,
     backgroundColor: '#10B981',
     borderWidth: 1.2,
-    borderColor: '#111827',
+    borderColor: '#0F172A',
   },
   cardName: {
-    fontSize: 10.5,
+    fontSize: 11.5,
     fontWeight: '700',
     color: '#F8FAFC',
     textAlign: 'center',
-    width: 82,
+    width: 88,
   },
   cardDeviceId: {
-    fontSize: 8,
+    fontSize: 8.5,
     fontWeight: '800',
     color: '#38BDF8',
     letterSpacing: 0.3,
-    marginTop: 0.5,
+    marginTop: 1,
   },
   cardDist: {
     fontSize: 9,
     color: '#94A3B8',
-    marginTop: 1,
+    marginTop: 2,
     textAlign: 'center',
   },
   factorWrap: {
-    marginTop: 2,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
+    marginTop: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
     borderRadius: 4,
-    backgroundColor: '#050811',
+    backgroundColor: '#070D1A',
   },
   signalText: {
     fontSize: 8.5,

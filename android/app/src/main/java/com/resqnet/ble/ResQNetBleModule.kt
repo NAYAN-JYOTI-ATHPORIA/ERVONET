@@ -26,8 +26,53 @@ class ResQNetBleModule(private val reactContext: ReactApplicationContext) :
     private var bleAdvertiser: BleAdvertiser? = null
     private var bleScanner: BleScanner? = null
 
+    private val btStateReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: android.content.Intent?) {
+            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                val isEnabled = state == BluetoothAdapter.STATE_ON
+                val params = Arguments.createMap().apply {
+                    putBoolean("isEnabled", isEnabled)
+                    putInt("state", state)
+                }
+                sendEvent(ResQNetConstants.EVENT_BLUETOOTH_STATE_CHANGED, params)
+            }
+        }
+    }
+
     init {
         initializeBle()
+        try {
+            val filter = android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                reactContext.registerReceiver(btStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                reactContext.registerReceiver(btStateReceiver, filter)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register btStateReceiver", e)
+        }
+    }
+
+    override fun invalidate() {
+        super.invalidate()
+        try {
+            reactContext.unregisterReceiver(btStateReceiver)
+        } catch (e: Exception) {
+            // ignore
+        }
+        try {
+            bleScanner?.stopScan()
+            bleAdvertiser?.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping BLE components on invalidate", e)
+        }
+        try {
+            val locManager = reactContext.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+            locManager?.removeUpdates(nativeLocationListener)
+        } catch (e: Exception) {
+            // ignore
+        }
     }
 
     override fun getName(): String = "ResQNetBle"
@@ -126,13 +171,26 @@ class ResQNetBleModule(private val reactContext: ReactApplicationContext) :
         bleScanner?.isCentralConnectedLookup = { addr ->
             bleAdvertiser?.isCentralConnected(addr) == true
         }
+
+        // Link local device ID and username to scanner to filter out self-advertisements
+        bleScanner?.localDeviceIdLookup = {
+            getOrCreateFixedDeviceId()
+        }
+        bleScanner?.localUsernameLookup = {
+            val prefs = reactContext.getSharedPreferences("ErvoNetPrefs", Context.MODE_PRIVATE)
+            prefs.getString("SAVED_USERNAME", "")
+        }
     }
 
     private fun sendEvent(eventName: String, params: WritableMap?) {
-        if (reactContext.hasActiveReactInstance()) {
-            reactContext
-                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                .emit(eventName, params)
+        try {
+            if (reactContext.hasActiveReactInstance()) {
+                reactContext
+                    .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    .emit(eventName, params)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Dropped event $eventName during lifecycle transition", e)
         }
     }
 
@@ -282,33 +340,14 @@ class ResQNetBleModule(private val reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
-    fun startMeshService(statusText: String, promise: Promise) {
-        try {
-            ResQNetForegroundService.startService(reactContext, statusText)
-            promise.resolve(true)
-        } catch (e: Exception) {
-            promise.reject("FG_SERVICE_FAILED", e.message)
-        }
-    }
-
-    @ReactMethod
-    fun stopMeshService(promise: Promise) {
-        try {
-            ResQNetForegroundService.stopService(reactContext)
-            promise.resolve(true)
-        } catch (e: Exception) {
-            promise.reject("FG_SERVICE_FAILED", e.message)
-        }
-    }
-
-    @ReactMethod
     fun connect(deviceAddress: String, promise: Promise) {
         if (!checkBlePermissions()) {
             promise.reject("PERMISSION_DENIED", "Bluetooth permissions not granted")
             return
         }
 
-        val started = bleScanner?.connect(deviceAddress) ?: false
+        val resolvedAddress = bleScanner?.getAddressForNodeId(deviceAddress) ?: deviceAddress
+        val started = bleScanner?.connect(resolvedAddress) ?: false
         if (started) {
             promise.resolve(true)
         } else {
@@ -318,17 +357,25 @@ class ResQNetBleModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun disconnect(deviceAddress: String, promise: Promise) {
-        bleScanner?.disconnect(deviceAddress)
+        val resolvedAddress = bleScanner?.getAddressForNodeId(deviceAddress) ?: deviceAddress
+        bleScanner?.disconnect(resolvedAddress)
         promise.resolve(true)
     }
 
     @ReactMethod
     fun sendMessage(targetAddress: String, packetJson: String, promise: Promise) {
         val startTime = System.currentTimeMillis()
+        val resolvedAddress = bleScanner?.getAddressForNodeId(targetAddress) ?: targetAddress
 
         // 1. If connected as GATT Client (we write to peripheral's RX characteristic)
-        if (bleScanner?.isConnected(targetAddress) == true) {
-            bleScanner?.sendMessage(targetAddress, packetJson) { success, error ->
+        val clientAddr = when {
+            bleScanner?.isConnected(resolvedAddress) == true -> resolvedAddress
+            bleScanner?.isConnected(targetAddress) == true -> targetAddress
+            else -> null
+        }
+
+        if (clientAddr != null && bleScanner?.isConnected(clientAddr) == true) {
+            bleScanner?.sendMessage(clientAddr, packetJson) { success, error ->
                 val latency = System.currentTimeMillis() - startTime
                 if (success) {
                     val params = Arguments.createMap().apply {
@@ -346,8 +393,13 @@ class ResQNetBleModule(private val reactContext: ReactApplicationContext) :
         }
 
         // 2. If connected as GATT Server (target is Central subscribed to our TX characteristic)
-        if (bleAdvertiser?.isCentralConnected(targetAddress) == true) {
-            val success = bleAdvertiser?.sendMessageToCentral(targetAddress, packetJson) ?: false
+        val advertiserTarget = when {
+            bleAdvertiser?.isCentralConnected(resolvedAddress) == true -> resolvedAddress
+            bleAdvertiser?.isCentralConnected(targetAddress) == true -> targetAddress
+            else -> null
+        }
+        if (advertiserTarget != null) {
+            val success = bleAdvertiser?.sendMessageToCentral(advertiserTarget, packetJson) ?: false
             val latency = System.currentTimeMillis() - startTime
             if (success) {
                 val params = Arguments.createMap().apply {
@@ -406,13 +458,191 @@ class ResQNetBleModule(private val reactContext: ReactApplicationContext) :
         }
 
         try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    @Suppress("DEPRECATION")
+                    adapter.enable()
+                } catch (se: SecurityException) {
+                    // Ignore and fall back to intent
+                }
+            }
+
             val intent = android.content.Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE).apply {
                 addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             reactContext.startActivity(intent)
             promise.resolve(false)
         } catch (e: Exception) {
-            promise.reject("ENABLE_FAILED", "Failed to launch enable Bluetooth prompt: ${e.message}")
+            try {
+                val settingsIntent = android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                reactContext.startActivity(settingsIntent)
+                promise.resolve(false)
+            } catch (se: Exception) {
+                promise.reject("ENABLE_FAILED", "Failed to launch enable Bluetooth prompt: ${e.message}")
+            }
+        }
+    }
+
+    @ReactMethod
+    fun openBluetoothSettings(promise: Promise) {
+        try {
+            val intent = android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            reactContext.startActivity(intent)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("SETTINGS_ERR", e.message)
+        }
+    }
+
+    private val nativeLocationListener = object : android.location.LocationListener {
+        override fun onLocationChanged(location: android.location.Location) {
+            try {
+                val prefs = reactContext.getSharedPreferences("ErvoNetPrefs", Context.MODE_PRIVATE)
+                prefs.edit()
+                    .putString("SAVED_LOC_LAT", location.latitude.toString())
+                    .putString("SAVED_LOC_LNG", location.longitude.toString())
+                    .putFloat("SAVED_LOC_ACC", location.accuracy)
+                    .putLong("SAVED_LOC_TIME", location.time)
+                    .apply()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to cache location to prefs", e)
+            }
+
+            val params = Arguments.createMap().apply {
+                putDouble("latitude", location.latitude)
+                putDouble("longitude", location.longitude)
+                putDouble("accuracy", location.accuracy.toDouble())
+                putDouble("timestamp", location.time.toDouble())
+            }
+            sendEvent(ResQNetConstants.EVENT_LOCATION_UPDATED, params)
+        }
+        override fun onProviderDisabled(provider: String) {}
+        override fun onProviderEnabled(provider: String) {}
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        val hasFine = ActivityCompat.checkSelfPermission(
+            reactContext,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ActivityCompat.checkSelfPermission(
+            reactContext,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return hasFine || hasCoarse
+    }
+
+    private fun getBestCachedLocationMap(locManager: android.location.LocationManager): WritableMap? {
+        val providers = listOf(
+            android.location.LocationManager.GPS_PROVIDER,
+            android.location.LocationManager.NETWORK_PROVIDER,
+            android.location.LocationManager.PASSIVE_PROVIDER
+        )
+
+        var bestLoc: android.location.Location? = null
+        for (provider in providers) {
+            try {
+                val loc = locManager.getLastKnownLocation(provider)
+                if (loc != null && (bestLoc == null || loc.time > bestLoc.time)) {
+                    bestLoc = loc
+                }
+            } catch (e: SecurityException) {}
+        }
+
+        if (bestLoc != null) {
+            return Arguments.createMap().apply {
+                putDouble("latitude", bestLoc.latitude)
+                putDouble("longitude", bestLoc.longitude)
+                putDouble("accuracy", bestLoc.accuracy.toDouble())
+                putDouble("timestamp", bestLoc.time.toDouble())
+            }
+        }
+
+        // Fallback to permanent SharedPreferences cache
+        val prefs = reactContext.getSharedPreferences("ErvoNetPrefs", Context.MODE_PRIVATE)
+        val latStr = prefs.getString("SAVED_LOC_LAT", null)
+        val lngStr = prefs.getString("SAVED_LOC_LNG", null)
+        val acc = prefs.getFloat("SAVED_LOC_ACC", 10f)
+        val time = prefs.getLong("SAVED_LOC_TIME", System.currentTimeMillis())
+        if (!latStr.isNullOrEmpty() && !lngStr.isNullOrEmpty()) {
+            val lat = latStr.toDoubleOrNull()
+            val lng = lngStr.toDoubleOrNull()
+            if (lat != null && lng != null) {
+                return Arguments.createMap().apply {
+                    putDouble("latitude", lat)
+                    putDouble("longitude", lng)
+                    putDouble("accuracy", acc.toDouble())
+                    putDouble("timestamp", time.toDouble())
+                }
+            }
+        }
+
+        return null
+    }
+
+    @ReactMethod
+    fun startLocationUpdates(promise: Promise) {
+        try {
+            val locManager = reactContext.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+            if (locManager == null || !hasLocationPermission()) {
+                promise.resolve(false)
+                return
+            }
+
+            val providers = listOf(
+                android.location.LocationManager.GPS_PROVIDER,
+                android.location.LocationManager.NETWORK_PROVIDER
+            )
+
+            var registered = false
+            for (provider in providers) {
+                try {
+                    if (locManager.isProviderEnabled(provider)) {
+                        locManager.requestLocationUpdates(
+                            provider,
+                            1000L,
+                            0.5f,
+                            nativeLocationListener,
+                            android.os.Looper.getMainLooper()
+                        )
+                        registered = true
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to register provider $provider", e)
+                }
+            }
+
+            // Immediately emit best available cached location from OS or SharedPreferences
+            getBestCachedLocationMap(locManager)?.let { params ->
+                sendEvent(ResQNetConstants.EVENT_LOCATION_UPDATED, params)
+            }
+
+            promise.resolve(registered)
+        } catch (e: Exception) {
+            Log.w(TAG, "startLocationUpdates error", e)
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getDeviceLocation(promise: Promise) {
+        try {
+            val locManager = reactContext.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+            if (locManager == null || !hasLocationPermission()) {
+                promise.resolve(null)
+                return
+            }
+
+            promise.resolve(getBestCachedLocationMap(locManager))
+        } catch (e: Exception) {
+            Log.w(TAG, "getDeviceLocation error", e)
+            promise.resolve(null)
         }
     }
 
@@ -443,6 +673,59 @@ class ResQNetBleModule(private val reactContext: ReactApplicationContext) :
             ) == PackageManager.PERMISSION_GRANTED
 
             btGranted && locGranted
+        }
+    }
+
+    @ReactMethod
+    fun shareOfflineMapDatabase(promise: Promise) {
+        try {
+            val possibleDbs = listOf(
+                reactContext.getDatabasePath("mbgl-offline.db"),
+                java.io.File(reactContext.filesDir.parentFile, "databases/mbgl-offline.db"),
+                reactContext.getDatabasePath("offline.db"),
+                java.io.File(reactContext.filesDir.parentFile, "databases/offline.db")
+            )
+
+            var foundDb: java.io.File? = null
+            for (db in possibleDbs) {
+                if (db != null && db.exists() && db.length() > 0) {
+                    foundDb = db
+                    break
+                }
+            }
+
+            if (foundDb == null) {
+                promise.reject("NO_DB", "No downloaded offline map packs found. Download an offline region first.")
+                return
+            }
+
+            val exportDir = java.io.File(reactContext.cacheDir, "exports").apply { mkdirs() }
+            val exportFile = java.io.File(exportDir, "ervonet_offline_map.db")
+            foundDb.copyTo(exportFile, overwrite = true)
+
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                reactContext,
+                "${reactContext.packageName}.fileprovider",
+                exportFile
+            )
+
+            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "application/octet-stream"
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                putExtra(android.content.Intent.EXTRA_SUBJECT, "ERVONET Offline Vector Map Database")
+                putExtra(android.content.Intent.EXTRA_TEXT, "ERVONET Offline Tactical Map Database (sideloadable offline tile pack).")
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val chooser = android.content.Intent.createChooser(intent, "Share ERVONET Offline Map Data").apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            reactContext.startActivity(chooser)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            Log.w(TAG, "shareOfflineMapDatabase error", e)
+            promise.reject("SHARE_ERR", e.message ?: "Could not share offline map database")
         }
     }
 }

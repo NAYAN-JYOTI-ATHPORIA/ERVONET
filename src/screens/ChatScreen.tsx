@@ -5,21 +5,19 @@ import {
   StyleSheet,
   TouchableOpacity,
   BackHandler,
-  Platform,
-  Alert,
 } from 'react-native';
 import { PeerNode, RadioState } from '../types/ble';
-import { MessageRecord } from '../types/message';
+import { MessageRecord, MapSectorPayload } from '../types/message';
 import { LocalNodeConfig } from '../services/storageService';
 import { EmergencyPreset, USER_FRIENDLY_PRESETS } from '../protocol/emergencyAlerts';
 import { ChatFeed } from '../components/ChatFeed';
 import { ChatInputBar } from '../components/ChatInputBar';
-import { getSignalQuality, estimateDistanceMeters } from '../utils/distance';
+import { estimateDistanceMeters } from '../utils/distance';
+import { isControlPacket } from '../protocol/packetSchema';
 
 interface ChatScreenProps {
   targetId: string;
   peer?: PeerNode;
-  localNodeId: string;
   localConfig: LocalNodeConfig;
   messages: MessageRecord[];
   radioState: RadioState;
@@ -29,14 +27,13 @@ interface ChatScreenProps {
   onClearChat: () => void;
   onDeleteMessage: (messageId: string) => void;
   onRetryMessage: (messageId: string) => void;
+  onViewMapSector?: (sector: MapSectorPayload) => void;
   onConnectPeer?: (address: string) => void;
-  onDisconnectPeer?: (address: string) => void;
 }
 
 export const ChatScreen: React.FC<ChatScreenProps> = ({
   targetId,
   peer,
-  localNodeId,
   localConfig,
   messages,
   radioState,
@@ -46,8 +43,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   onClearChat,
   onDeleteMessage,
   onRetryMessage,
+  onViewMapSector,
   onConnectPeer,
-  onDisconnectPeer,
 }) => {
   // Handle Android hardware back button
   useEffect(() => {
@@ -72,7 +69,6 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   let headerSubtitle = 'All Nearby Mesh Nodes • Broadcast';
   let initial = 'ALL';
   let isConnected = false;
-  let signalInfo = null;
 
   if (isBroadcast) {
     headerTitle = 'Everyone (Broadcast)';
@@ -99,19 +95,30 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
     headerTitle = name;
     initial = (name[0] || 'U').toUpperCase();
     isConnected = peer?.connectionState === 'CONNECTED';
-    if (peer?.rssi) {
-      signalInfo = getSignalQuality(peer.rssi);
-    }
     const estimatedMeters = peer?.rssi ? estimateDistanceMeters(peer.rssi) : null;
-    const distText = estimatedMeters ? `~${estimatedMeters}m` : 'In Range';
+    const distText = peer?.isMultiHop
+      ? `${peer.hopCount || 2} Hops Relay`
+      : estimatedMeters
+      ? `~${estimatedMeters}m`
+      : 'In Range';
     const rssiText = peer?.rssi ? `${peer.rssi} dBm` : '';
-    const stateText = isConnected ? 'Connected' : peer?.connectionState === 'CONNECTING' ? 'Connecting...' : 'Discovered';
+    const stateText = peer?.isMultiHop
+      ? (peer.viaNodeId ? `via ${peer.viaNodeId.replace('ERVO-', '').replace('RESQ-', '')}` : 'Dijkstra')
+      : isConnected
+      ? 'Connected'
+      : peer?.connectionState === 'CONNECTING'
+      ? 'Connecting...'
+      : 'Discovered';
 
     headerSubtitle = `${peer?.nodeId || targetId} • ${distText}${rssiText ? ` • ${rssiText}` : ''} • ${stateText}`;
   }
 
   // Strict Segregation Filter for this dedicated view
   const filteredMessages = messages.filter((m) => {
+    if (isControlPacket(m.packet)) {
+      return false;
+    }
+
     // Critical SOS alerts broadcast to all active views
     if (m.packet.priority === 'CRITICAL_SOS') {
       return true;
@@ -240,7 +247,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               activeOpacity={0.7}
             >
-              <Text style={styles.actionBtnText}>🗑️</Text>
+              <Text style={styles.actionBtnText}>CLR</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -255,7 +262,11 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
               styles.presetChip,
               preset.priority === 'CRITICAL_SOS' && styles.presetChipSos,
             ]}
-            onPress={() => onSendPreset(preset)}
+            onPress={() => {
+              onSendPreset(preset).catch((err) => {
+                console.warn('Preset send error:', err);
+              });
+            }}
             activeOpacity={0.75}
           >
             <Text
@@ -275,10 +286,10 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
       <View style={styles.feedWrapper}>
         <ChatFeed
           messages={filteredMessages}
-          localNodeId={localNodeId}
           onClearChat={onClearChat}
           onDeleteMessage={onDeleteMessage}
           onRetryMessage={onRetryMessage}
+          onViewMapSector={onViewMapSector}
         />
       </View>
 
@@ -286,7 +297,6 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
       <ChatInputBar
         selectedTargetId={targetId}
         selectedTargetName={headerTitle}
-        onResetTargetToBroadcast={() => {}}
         onSendMessage={onSendMessage}
       />
     </View>
@@ -389,10 +399,18 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   actionBtn: {
-    padding: 4,
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#334155',
   },
   actionBtnText: {
-    fontSize: 16,
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#94A3B8',
+    letterSpacing: 0.5,
   },
   presetStrip: {
     flexDirection: 'row',

@@ -5,6 +5,8 @@ import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import java.io.ByteArrayOutputStream
@@ -23,12 +25,22 @@ class BleAdvertiser(
     private var bluetoothLeAdvertiser: BluetoothLeAdvertiser? = null
     private var gattServer: BluetoothGattServer? = null
     private var isAdvertising = false
+    private var shouldBeAdvertising = false
     private var localNodeId: String = "RESQ-NODE-01"
     private var localNodeRole: String = "Field Worker"
+    private var cachedDisplayName: String? = null
 
-    private val connectedCentrals = mutableSetOf<BluetoothDevice>()
-    private val subscribedCentrals = ConcurrentHashMap.newKeySet<String>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var advWatchdogRunnable: Runnable? = null
+
+    private val connectedCentralsMap = ConcurrentHashMap<String, BluetoothDevice>()
     private val preparedBuffers = ConcurrentHashMap<String, ByteArrayOutputStream>()
+
+    // Bidirectional mappings to track Central devices by Node ID and Callsign
+    private val centralNodeIdToDevice = ConcurrentHashMap<String, BluetoothDevice>()
+    private val centralAddressToNodeId = ConcurrentHashMap<String, String>()
+    private val centralAddressToName = ConcurrentHashMap<String, String>()
+
     var nameLookup: ((String) -> String?)? = null
 
     private val advertiseCallback = object : AdvertiseCallback() {
@@ -39,8 +51,13 @@ class BleAdvertiser(
         }
 
         override fun onStartFailure(errorCode: Int) {
+            if (errorCode == ADVERTISE_FAILED_ALREADY_STARTED) {
+                Log.d(TAG, "BLE Advertising already started - maintaining active state")
+                isAdvertising = true
+                onAdvStateChanged(true, null)
+                return
+            }
             val errorMsg = when (errorCode) {
-                ADVERTISE_FAILED_ALREADY_STARTED -> "Advertising already started"
                 ADVERTISE_FAILED_DATA_TOO_LARGE -> "Advertise data too large"
                 ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "Advertising feature unsupported"
                 ADVERTISE_FAILED_INTERNAL_ERROR -> "Advertising internal error"
@@ -50,6 +67,61 @@ class BleAdvertiser(
             Log.e(TAG, errorMsg)
             isAdvertising = false
             onAdvStateChanged(false, errorMsg)
+
+            // Auto-recovery watchdog: restart advertising automatically if it dropped
+            if (shouldBeAdvertising && getActiveAdapter()?.isEnabled == true) {
+                mainHandler.postDelayed({
+                    if (shouldBeAdvertising && !isAdvertising) {
+                        Log.d(TAG, "Auto-recovering BLE advertising...")
+                        startAdvertisingInternal()
+                    }
+                }, 1500)
+            }
+        }
+    }
+
+    private fun extractSenderInfo(payload: String): Pair<String?, String?> {
+        var senderId: String? = null
+        var senderName: String? = null
+        try {
+            val idIdx = payload.indexOf("\"senderId\":\"")
+            if (idIdx != -1) {
+                val start = idIdx + 12
+                val end = payload.indexOf("\"", start)
+                if (end != -1) {
+                    senderId = payload.substring(start, end).trim()
+                }
+            }
+            val nameIdx = payload.indexOf("\"senderName\":\"")
+            if (nameIdx != -1) {
+                val start = nameIdx + 14
+                val end = payload.indexOf("\"", start)
+                if (end != -1) {
+                    senderName = payload.substring(start, end).trim()
+                }
+            }
+        } catch (e: Exception) {
+            // Non-critical string inspection
+        }
+        return Pair(senderId, senderName)
+    }
+
+    private fun registerCentralSender(device: BluetoothDevice, payload: String) {
+        val (senderId, senderName) = extractSenderInfo(payload)
+        if (!senderId.isNullOrEmpty()) {
+            val cleanId = senderId.trim()
+            centralNodeIdToDevice[cleanId.uppercase()] = device
+            centralAddressToNodeId[device.address] = cleanId
+
+            if (!senderName.isNullOrEmpty()) {
+                val cleanName = senderName.trim()
+                centralNodeIdToDevice[cleanName.lowercase()] = device
+                centralAddressToName[device.address] = cleanName
+            }
+
+            val reportedName = senderName ?: cleanId
+            Log.d(TAG, "Mapped Central ${device.address} to Node ID: $cleanId ($reportedName)")
+            onClientConnected(device.address, reportedName)
         }
     }
 
@@ -58,16 +130,40 @@ class BleAdvertiser(
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             Log.d(TAG, "GATT Server connection state change: ${device.address}, status=$status, newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                connectedCentrals.add(device)
+                connectedCentralsMap[device.address] = device
+
+                // Request high-speed 2M PHY (BLE 5.0) from server side if supported
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try {
+                        gattServer?.setPreferredPhy(
+                            device,
+                            BluetoothDevice.PHY_LE_2M_MASK,
+                            BluetoothDevice.PHY_LE_2M_MASK,
+                            BluetoothDevice.PHY_OPTION_NO_PREFERRED
+                        )
+                        Log.d(TAG, "Server requested 2M High-Speed PHY for central: ${device.address}")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Server setPreferredPhy error: ${e.message}")
+                    }
+                }
+
                 val knownName = nameLookup?.invoke(device.address)
-                val devName = knownName
-                    ?: try { device.name?.takeIf { !it.startsWith("Android-") && !it.startsWith("Device") } } catch (e: Exception) { null }
-                    ?: "User-${device.address.takeLast(4).replace(":", "")}"
-                onClientConnected(device.address, devName)
+                if (knownName != null && !knownName.startsWith("User-") && !knownName.startsWith("Android-") && !knownName.startsWith("Device")) {
+                    centralNodeIdToDevice[knownName.uppercase()] = device
+                    centralAddressToNodeId[device.address] = knownName
+                    onClientConnected(device.address, knownName)
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                connectedCentrals.remove(device)
-                subscribedCentrals.remove(device.address)
+                connectedCentralsMap.remove(device.address)
                 preparedBuffers.remove(device.address)
+                val mappedId = centralAddressToNodeId.remove(device.address)
+                if (mappedId != null) {
+                    centralNodeIdToDevice.remove(mappedId.uppercase())
+                }
+                val mappedName = centralAddressToName.remove(device.address)
+                if (mappedName != null) {
+                    centralNodeIdToDevice.remove(mappedName.lowercase())
+                }
                 onClientDisconnected(device.address)
             }
         }
@@ -97,6 +193,9 @@ class BleAdvertiser(
                 val payload = value?.let { String(it, StandardCharsets.UTF_8) } ?: ""
                 Log.d(TAG, "GATT Server received packet from ${device.address}: $payload")
 
+                // Immediately register sender Node ID so 1-to-1 reply works seamlessly
+                registerCentralSender(device, payload)
+
                 if (responseNeeded) {
                     gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
                 }
@@ -118,6 +217,7 @@ class BleAdvertiser(
             if (execute && buffer != null) {
                 val payload = buffer.toString(StandardCharsets.UTF_8.name())
                 if (payload.isNotEmpty()) {
+                    registerCentralSender(device, payload)
                     onMessageReceived(device.address, payload)
                 }
             }
@@ -157,10 +257,7 @@ class BleAdvertiser(
                     value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
                 )
                 if (isSubscribed) {
-                    subscribedCentrals.add(device.address)
                     Log.d(TAG, "Central ${device.address} subscribed to TX notifications")
-                } else {
-                    subscribedCentrals.remove(device.address)
                 }
                 if (responseNeeded) {
                     gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
@@ -180,17 +277,42 @@ class BleAdvertiser(
 
     @SuppressLint("MissingPermission")
     fun start(nodeId: String, nodeRole: String, displayName: String? = null): Boolean {
+        localNodeId = nodeId
+        localNodeRole = nodeRole
+        cachedDisplayName = displayName
+        shouldBeAdvertising = true
+
+        startWatchdog()
+        return startAdvertisingInternal()
+    }
+
+    private fun startWatchdog() {
+        advWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+        advWatchdogRunnable = object : Runnable {
+            override fun run() {
+                if (shouldBeAdvertising) {
+                    val adapter = getActiveAdapter()
+                    if (adapter != null && adapter.isEnabled && (!isAdvertising || bluetoothLeAdvertiser == null)) {
+                        Log.d(TAG, "Advertiser watchdog: advertising was dropped, auto-restarting now...")
+                        startAdvertisingInternal()
+                    }
+                    mainHandler.postDelayed(this, 4000)
+                }
+            }
+        }
+        mainHandler.postDelayed(advWatchdogRunnable!!, 4000)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAdvertisingInternal(): Boolean {
         val adapter = getActiveAdapter()
         if (adapter == null || !adapter.isEnabled) {
             Log.e(TAG, "Bluetooth not available or enabled")
             return false
         }
 
-        localNodeId = nodeId
-        localNodeRole = nodeRole
-
         // Attempt to update adapter's local name for seamless peer discovery
-        val friendlyName = displayName ?: nodeId
+        val friendlyName = cachedDisplayName ?: localNodeId
         try {
             adapter.name = friendlyName.take(24)
         } catch (e: Exception) {
@@ -270,10 +392,10 @@ class BleAdvertiser(
             .setIncludeTxPowerLevel(false)
             .addServiceUuid(serviceUuid)
 
-        val fixedId = if (nodeId.startsWith("ERVO-")) nodeId.removePrefix("ERVO-").take(4)
-            else if (nodeId.startsWith("RESQ-")) nodeId.removePrefix("RESQ-").take(4)
-            else nodeId.take(4)
-        val humanName = displayName?.takeIf { it.isNotBlank() } ?: nodeId
+        val fixedId = if (localNodeId.startsWith("ERVO-")) localNodeId.removePrefix("ERVO-").take(4)
+            else if (localNodeId.startsWith("RESQ-")) localNodeId.removePrefix("RESQ-").take(4)
+            else localNodeId.take(4)
+        val humanName = cachedDisplayName?.takeIf { it.isNotBlank() } ?: localNodeId
         // Format: "E:XXXX:Name" - embeds ERVONET fixed device ID and human username safely within BLE 24-byte limit
         val advSignature = "E:$fixedId:${humanName.take(14)}"
         val nodeBytes = advSignature.toByteArray(StandardCharsets.UTF_8)
@@ -295,6 +417,9 @@ class BleAdvertiser(
 
     @SuppressLint("MissingPermission")
     fun stop() {
+        shouldBeAdvertising = false
+        advWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+
         try {
             getActiveAdapter()?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
         } catch (e: Exception) {
@@ -308,10 +433,37 @@ class BleAdvertiser(
         } catch (e: Exception) {
             Log.e(TAG, "Error closing GATT server: ${e.message}")
         }
-        connectedCentrals.clear()
-        subscribedCentrals.clear()
+        connectedCentralsMap.clear()
         preparedBuffers.clear()
+        centralNodeIdToDevice.clear()
+        centralAddressToNodeId.clear()
+        centralAddressToName.clear()
         onAdvStateChanged(false, null)
+    }
+
+    private fun resolveCentralDevice(targetAddress: String): BluetoothDevice? {
+        val clean = targetAddress.trim()
+        connectedCentralsMap.values.find { it.address.equals(clean, ignoreCase = true) }?.let { return it }
+        centralNodeIdToDevice[clean.uppercase()]?.let { return it }
+        centralNodeIdToDevice[clean.lowercase()]?.let { return it }
+        val stripped = clean.replace("ERVO-", "").replace("RESQ-", "")
+        if (stripped.isNotBlank()) {
+            centralNodeIdToDevice.entries.find {
+                it.key.equals(stripped, ignoreCase = true) ||
+                it.key.contains(stripped, ignoreCase = true)
+            }?.value?.let { return it }
+        }
+        // Only fall back to single connected central when it hasn't been mapped to a DIFFERENT known node ID yet
+        if (connectedCentralsMap.size == 1 && !clean.startsWith("#") && !clean.equals("BROADCAST", ignoreCase = true)) {
+            val onlyDevice = connectedCentralsMap.values.firstOrNull()
+            if (onlyDevice != null) {
+                val mappedId = centralAddressToNodeId[onlyDevice.address]
+                if (mappedId == null || mappedId.equals(clean, ignoreCase = true)) {
+                    return onlyDevice
+                }
+            }
+        }
+        return null
     }
 
     @SuppressLint("MissingPermission")
@@ -321,7 +473,7 @@ class BleAdvertiser(
         val txChar = service.getCharacteristic(ResQNetConstants.CHAR_TX_MESSAGE_UUID) ?: return false
 
         val bytes = payload.toByteArray(StandardCharsets.UTF_8)
-        val targetDevice = connectedCentrals.find { it.address.equals(targetAddress, ignoreCase = true) } ?: return false
+        val targetDevice = resolveCentralDevice(targetAddress) ?: return false
 
         return try {
             val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -332,13 +484,13 @@ class BleAdvertiser(
                 server.notifyCharacteristicChanged(targetDevice, txChar, false)
             }
             if (success) {
-                Log.d(TAG, "GATT Server notified Central $targetAddress (${bytes.size} bytes)")
+                Log.d(TAG, "GATT Server notified Central ${targetDevice.address} (${bytes.size} bytes)")
             } else {
-                Log.w(TAG, "GATT Server notify returned false for Central $targetAddress")
+                Log.w(TAG, "GATT Server notify returned false for Central ${targetDevice.address}")
             }
             success
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to notify central $targetAddress: ${e.message}")
+            Log.e(TAG, "Failed to notify central: ${e.message}")
             false
         }
     }
@@ -352,7 +504,7 @@ class BleAdvertiser(
         val bytes = messageJson.toByteArray(StandardCharsets.UTF_8)
         var count = 0
 
-        for (device in connectedCentrals) {
+        for (device in connectedCentralsMap.values) {
             try {
                 val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     val status = server.notifyCharacteristicChanged(device, txChar, false, bytes)
@@ -370,13 +522,9 @@ class BleAdvertiser(
     }
 
     fun isCentralConnected(targetAddress: String): Boolean {
-        return connectedCentrals.any { it.address.equals(targetAddress, ignoreCase = true) }
-    }
-
-    fun isCentralSubscribed(targetAddress: String): Boolean {
-        return subscribedCentrals.any { it.equals(targetAddress, ignoreCase = true) }
+        return resolveCentralDevice(targetAddress) != null
     }
 
     fun isCurrentlyAdvertising(): Boolean = isAdvertising
-    fun getConnectedCentralCount(): Int = connectedCentrals.size
+    fun getConnectedCentralCount(): Int = connectedCentralsMap.size
 }
